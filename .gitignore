@@ -1,0 +1,28 @@
+# 環境変数・認証情報
+.env
+.env.local
+*.key
+*-credentials.json
+service-account*.json
+
+# Node
+node_modules/
+npm-debug.log
+*.log
+
+# 生成物・ステート
+posts/drafts.json
+posts/queue.json
+posts/*.local.*
+
+# 他プロジェクト（別管理）
+receipt-ocr/
+pl-automation/
+nakahara_test/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/

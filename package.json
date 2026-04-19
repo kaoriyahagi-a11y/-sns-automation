@@ -1,0 +1,25 @@
+{
+  "name": "sns-automation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "X / Instagram / TikTok SNS自動化ツール（Claude AI搭載）",
+  "scripts": {
+    "start": "node src/index.js",
+    "generate": "node src/index.js generate",
+    "post": "node src/index.js post",
+    "schedule": "node src/index.js schedule",
+    "analytics": "node src/index.js analytics",
+    "run-scheduler": "node src/index.js run-scheduler",
+    "run-auto": "node run-auto.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.54.0",
+    "twitter-api-v2": "^1.19.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.7",
+    "axios": "^1.7.9",
+    "chalk": "^5.4.1",
+    "inquirer": "^9.3.7",
+    "date-fns": "^3.6.0"
+  }
+}
