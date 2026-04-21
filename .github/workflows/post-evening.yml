@@ -1,13 +1,11 @@
 name: Post Evening Tweet
 
 on:
-  schedule:
-    # 20:58 / 21:02 / 21:10 JST = 11:58 / 12:02 / 12:10 UTC
-    # 冗長化: GitHub Actions cron は遅延・スキップ対策で3本
-    - cron: '58 11 * * *'
-    - cron: '2 12 * * *'
-    - cron: '10 12 * * *'
-  workflow_dispatch:
+  # schedule: 停止 (2026-04-22) - Cloudflare Workers に移行
+  #   - cron: '58 11 * * *'
+  #   - cron: '2 12 * * *'
+  #   - cron: '10 12 * * *'
+  workflow_dispatch:  # 手動実行だけ残す（バックアップ用）
 
 jobs:
   post:
