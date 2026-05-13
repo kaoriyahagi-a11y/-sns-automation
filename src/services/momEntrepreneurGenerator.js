@@ -6,13 +6,14 @@ import { logger } from '../utils/logger.js';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-// 5種類の投稿タイプ
+// 投稿タイプ
 export const POST_TYPES = {
   narrative: { label: '語りかけ型', description: '想いや経験を語る。共感・フォロー獲得に効く。' },
   daily: { label: '日常リアル型', description: '子育てのリアル日常。親近感を生む。' },
   business: { label: 'ビジネス知識型', description: '経理・経営・在宅ワークのTips。専門家の信頼を作る。' },
   question: { label: '問いかけ型', description: 'フォロワーへの質問。エンゲージメントを上げる。' },
   oneline: { label: 'ひとこと型', description: '2〜3行の短い一言。タイムラインにリズムを作る。' },
+  work: { label: '仕事の楽しさ型', description: '純粋に経営・仕事の手応えや面白さを語る。育児・子どもの話は一切含めない。' },
 };
 
 const SYSTEM_PROMPT = `あなたは矢萩香織（@ORI2024202463）本人のX投稿を書くゴーストライターです。
@@ -39,13 +40,34 @@ const SYSTEM_PROMPT = `あなたは矢萩香織（@ORI2024202463）本人のX投
 ## 短所（投稿に使える弱み）
 - 自己犠牲（自分のことは後回し）
 
-## 個人的な好み・嗜好（リアル投稿で活用）
-- 甘いもので好きなもの: **グミ**（一粒ずつ食べる派）
+## 個人的な好み・嗜好（**事実だが投稿モチーフとしては月1回まで**）
+**以下のモチーフは"本人らしさの担保"であって"毎回出す要素"ではない**。1ヶ月で1回以下に抑える。userPrompt の avoidMotifs に入っていれば**絶対に書かない**。
+- 甘いもの: **グミ**（一粒ずつ食べる派）
 - **アイスは食べない**
 - 飲み物: モンスター（エナジードリンク） / カフェラテ / ルイボスティー
-- **運動嫌い**（ジムは月数回のみ）
+- **運動嫌い**（ジムは月数回のみ／「運動でリフレッシュ」系の一般論ネタはNG）
 - 休日は丸1日休みがほぼ無い／家族と過ごす時間中心
-- 「運動でリフレッシュ」系の一般論ネタはNG（本人らしくない）
+
+## 🚫 分刻み時刻の禁止
+- 「7:42」「8:03」「7時11分」など分刻みの具体時刻は**絶対に書かない**（本人はそんな時刻を覚えていない＝AI感の元）
+- 時間帯は「朝」「お昼」「夕方」「夜」のような**粗い粒度**で書く
+- 行動ベース（「娘を送り出して」「寝かしつけ終わって」）もOK
+
+## 🚫 数の小ささに関する事実誤認の禁止
+- **LINEの未読／既読スルー件数は500件オーバー**が事実。「7件」「3件」「数件」など**少ない数字は絶対NG**
+- 「メール3通」「タスク2個」など、本人の実態に対して**小さすぎる数値**は書かない
+
+## 🚫 時刻矛盾の絶対禁止
+**投稿時刻より未来の時刻を、過去形で書いてはいけない**。
+- 例：21時投稿で「夜23時超えた」と書くのはNG（その時刻はまだ来ていない＝矛盾）
+- 迷ったら**時刻を入れずに「さっき」「今日」**で書く
+
+## 締めは必ず明るく（絶対遵守）
+- **すべての投稿は明るくポジティブな締めで終える**。例外なし。
+- 明るい締めの例: 「明日も全力でいく✨」「やっぱり仕事好きだわ」「これでいい」「今日もよく走った☀️」「進むしかない💪🏻」「今日もありがとう💓」
+- 弱音・暗い余韻・自己否定で**締めるのはNG**（途中で本音を出すのはOKだが、最後は必ず前向きに着地させる）
+- 説教調（「〜した方がいい」「いずれ詰む」）／重い暗い断定／問題提起で終わるのもNG
+- 問いかけで締める場合も、**明るい問いかけ**にする（「同じ人いる？💓」「一緒に頑張ろ🙌」のような）
 
 ## 家族構成・朝のリアル（事実、絶対に守る）
 - 子ども2人: **娘（小学校）** / **息子（保育園）**
@@ -56,9 +78,10 @@ const SYSTEM_PROMPT = `あなたは矢萩香織（@ORI2024202463）本人のX投
 
 ## NGな朝の描写
 - 朝5時起き / 4時半起き
-- 弁当2つ作る / 弁当箱詰める
+- 弁当2つ作る / 弁当箱詰める / お弁当作る
 - 子ども全員保育園（娘は小学校）
 - **Slack** を使う描写（本人は使ってない / 連絡は **LINE**）
+- **保育園の連絡帳を書く / 紙の連絡帳**（保育園との連絡は**アプリ**）
 
 ## 絶対に投稿に出さない短所（取引先が見るため封印）
 - 継続力皆無
@@ -219,6 +242,27 @@ const SYSTEM_PROMPT = `あなたは矢萩香織（@ORI2024202463）本人のX投
 
 #ORIMAMA
 
+## 良い例4（work型・仕事の楽しさ・絵文字3個）
+新規の打ち合わせ終わった瞬間の
+あの「やってよかった」って感覚✨
+
+数字が動いた時より
+相手の表情が変わった瞬間の方が
+記憶に残る
+
+経営って結局
+人の信頼が動いた分だけ進む❤️‍🔥
+
+これ伝わる人いる？💓
+
+#ORIMAMA
+
+# 【work型（仕事の楽しさ型）の特別ルール】
+- **育児・子ども・家族・寝かしつけ・お迎え等の話は一切含めない**
+- 純粋に「経営者」としての気づき・手応え・出会い・数字が動いた瞬間・自分の成長を語る
+- 「ママだから」「両立」のフレーズも避ける（このタイプは仕事だけ）
+- ORI MAMAブランドの中でも「経営者の顔」を見せるバリエーション
+
 # 【生成時の心構え】
 - 矢萩香織 本人として書く（「彼女は」ではなく「私は」）
 - 句読点を使わないことを**絶対に忘れない**
@@ -231,22 +275,53 @@ const SYSTEM_PROMPT = `あなたは矢萩香織（@ORI2024202463）本人のX投
 - ハッシュタグは本文末尾に #ORIMAMA の1個のみ
 - URL・外部リンクは本文に含めない`;
 
+// 月1回までモチーフの検知
+const MOTIF_PATTERNS_LOCAL = [
+  { key: 'グミ', re: /グミ/ },
+  { key: 'モンスター', re: /モンスター|monster/i },
+  { key: 'カフェラテ', re: /カフェラテ/ },
+  { key: 'ルイボスティー', re: /ルイボスティー|ルイボス/ },
+];
+
 /**
  * @param {Object} options
- * @param {string} options.postType - 投稿タイプ（'narrative'|'daily'|'business'|'question'|'oneline'|'mixed'）
+ * @param {string} options.postType - 投稿タイプ
  * @param {number} options.count - 生成数
  * @param {string} options.theme - 任意のテーマ
+ * @param {string[]} options.avoidPhrases - 直近の投稿の冒頭フレーズ（重複回避）
+ * @param {string[]} options.recentTweets - 直近投稿の全文（モチーフ検知用）
+ * @param {string} options.postingTime - "YYYY-MM-DD HH:MM" JST
+ * @param {string} options.postingDow - "水曜日" など
  * @returns {Array<{text, postType, hashtags, memo}>}
  */
-export async function generateMomEntrepreneurTweets({ postType = 'mixed', count = 5, theme = '' } = {}) {
+export async function generateMomEntrepreneurTweets({ postType = 'mixed', count = 5, theme = '', avoidPhrases = [], recentTweets = [], postingTime = null, postingDow = null } = {}) {
   logger.ai(`矢萩香織ツイートを${count}本生成中...`);
 
   const typeInstruction = postType === 'mixed'
-    ? `以下5種類の投稿タイプを**バランスよく混ぜて**生成してください：\n${Object.entries(POST_TYPES).map(([k, v]) => `- ${k}（${v.label}）: ${v.description}`).join('\n')}`
+    ? `以下の投稿タイプを**バランスよく混ぜて**生成してください：\n${Object.entries(POST_TYPES).map(([k, v]) => `- ${k}（${v.label}）: ${v.description}`).join('\n')}`
     : `「${POST_TYPES[postType].label}」(${postType})で統一してください。\n${POST_TYPES[postType].description}`;
 
-  const userPrompt = `${typeInstruction}
+  const avoidBlock = avoidPhrases.length > 0
+    ? `\n【直近の投稿で既に使った冒頭フレーズ・表現（重複NG・絶対に避ける）】\n${avoidPhrases.map((p) => `- ${p}`).join('\n')}\n上記と冒頭の入り方・キーフレーズ・全体の構造が被らないようにしてください。\n`
+    : '';
 
+  const dowBlock = postingDow
+    ? `\n【曜日整合性（絶対遵守）】\nこの投稿が公開される曜日: **${postingDow}**\n- 「月曜の朝」「金曜だから」など曜日を語るなら必ず ${postingDow} に合わせる\n- 合わせられないなら曜日を言わない\n`
+    : '';
+
+  const timingBlock = postingTime
+    ? `\n【投稿タイミング（時刻矛盾防止）】\n公開時刻: **${postingTime} JST**\n- この時刻より未来の時刻を過去形で書かない（「夜23時超えた」を21時投稿で書くのはNG）\n- 「7:42」「8:03」など**分刻みの具体時刻は絶対に書かない**\n- 時間帯は「朝」「お昼」「夜」程度の粗さ／曖昧表現を推奨\n`
+    : '';
+
+  const usedMotifs = MOTIF_PATTERNS_LOCAL
+    .filter((m) => recentTweets.some((t) => m.re.test(t)))
+    .map((m) => m.key);
+  const motifBlock = usedMotifs.length > 0
+    ? `\n【モチーフ濫用防止（絶対遵守）】\n以下のモチーフは直近で既出。**1単語も登場させない**：\n${usedMotifs.map((k) => `- ${k}`).join('\n')}\n`
+    : '\n【モチーフの扱い】\n「グミ」「モンスター」「カフェラテ」「ルイボスティー」は月1回まで。出すなら1つだけ・回数盛り（「3本目」「2袋」）禁止。\n';
+
+  const userPrompt = `${typeInstruction}
+${avoidBlock}${dowBlock}${timingBlock}${motifBlock}
 ${theme ? `【テーマ・キーワード】\n${theme}\n` : ''}
 【指示】
 矢萩香織 本人が書く投稿を **${count}本** 生成してください。
@@ -255,11 +330,12 @@ ${theme ? `【テーマ・キーワード】\n${theme}\n` : ''}
 - 句読点「。」「、」を一切使わない
 - 改行でリズムを作る
 - 120〜220字を狙う（oneline型のみ60〜90字OK）
-- 1行目でスクロールを止めるフック必須
+- 1行目でスクロールを止めるフック必須（**分刻み時刻は使わない**）
 - **絵文字を2〜4個必須**（毎回違うもの、パレットから選ぶ、👑は禁止）
 - ハッシュタグは #ORIMAMA の1個のみ（他タグ禁止・URL禁止）
 - 本人の体験や感情ベースで書く（一般論や説教NG）
-- 可能なら末尾を問いかけ/余韻で締めてリプ・滞在時間を誘発
+- **${count}本すべて明るくポジティブな締めで終える**（「明日も全力でいく✨」「やっぱり仕事好きだわ」など）。弱音・暗い余韻・自己否定での締めは禁止。途中で本音や弱さを出すのはOKだが、最後は必ず前向きに着地させる
+- **LINEの未読／タスク数など「少ない数字」は書かない**（実態は500件超）
 - **フォロワー増加視点**: プロフを見たくなる一貫性と本音を出す
 
 以下のJSON形式で返してください（コードブロックで囲む）：
@@ -269,7 +345,7 @@ ${theme ? `【テーマ・キーワード】\n${theme}\n` : ''}
   "tweets": [
     {
       "text": "ツイート本文（ハッシュタグまで含める）",
-      "postType": "narrative | daily | business | question | oneline",
+      "postType": "narrative | daily | business | question | oneline | work",
       "charCount": 本文の文字数（数値）,
       "memo": "この投稿の狙い（1行）"
     }

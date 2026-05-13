@@ -1,6 +1,8 @@
 // GitHub Actions用: 5本生成→ベスト1本を即投稿
 // 実行: node post-now.js morning | evening
-// 同スロット内で既に投稿済みなら重複防止でスキップ
+// - 同スロット内で既に投稿済みなら重複防止でスキップ
+// - 直近投稿との類似度をチェックし、被るものは除外
+// - 投稿タイプは曜日でローテーション（仕事楽しさ型を含む）
 import 'dotenv/config';
 import { TwitterApi } from 'twitter-api-v2';
 import { generateMomEntrepreneurTweets } from './src/services/momEntrepreneurGenerator.js';
@@ -9,20 +11,31 @@ import { logger } from './src/utils/logger.js';
 
 const SLOTS = {
   morning: {
-    postType: 'narrative',
-    theme: '朝の始まり／一日の覚悟／育児と仕事の両立',
-    // 朝スロット: 今日の7:00 JST以降に投稿済みならスキップ
     cutoffHourJst: 7,
+    rotation: [
+      { postType: 'narrative', theme: '朝の始まり／一日の覚悟／仕事への気持ち' },
+      { postType: 'work', theme: '仕事の手応え／経営の面白さ／達成感（子ども・育児の話なし）' },
+      { postType: 'question', theme: '経営者ママへの問いかけ／フォロワーとの会話' },
+    ],
   },
   evening: {
-    postType: 'daily',
-    theme: '一日の終わり／子どもとの時間／素直な気持ち',
-    // 夜スロット: 今日の20:00 JST以降に投稿済みならスキップ
     cutoffHourJst: 20,
+    rotation: [
+      { postType: 'daily', theme: '一日の終わり／素直な気持ち' },
+      { postType: 'oneline', theme: '刺さる短い一言／ブランドメッセージ' },
+      { postType: 'work', theme: '仕事への愛着／一日の振り返り（子ども・育児の話なし）' },
+    ],
   },
 };
 
-async function alreadyPostedInSlot(cutoffHourJst) {
+function pickRotation(slot) {
+  const jst = new Date(Date.now() + 9 * 3600 * 1000);
+  const day = jst.getUTCDate();
+  return slot.rotation[day % slot.rotation.length];
+}
+
+// 直近の投稿を取得（重複ガード用 + cutoff判定の両方に使う）
+async function fetchRecentPosts(cutoffHourJst) {
   const client = new TwitterApi({
     appKey: process.env.TWITTER_API_KEY,
     appSecret: process.env.TWITTER_API_SECRET,
@@ -31,11 +44,12 @@ async function alreadyPostedInSlot(cutoffHourJst) {
   });
   const me = await client.v2.me();
   const tl = await client.v2.userTimeline(me.data.id, {
-    max_results: 10,
+    max_results: 30,
     'tweet.fields': ['created_at'],
     exclude: ['retweets', 'replies'],
   });
   const tweets = tl.data?.data || [];
+
   const now = new Date();
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const y = jst.getUTCFullYear();
@@ -43,10 +57,36 @@ async function alreadyPostedInSlot(cutoffHourJst) {
   const d = String(jst.getUTCDate()).padStart(2, '0');
   const hh = String(cutoffHourJst).padStart(2, '0');
   const cutoff = new Date(`${y}-${m}-${d}T${hh}:00:00+09:00`);
-  return tweets.some((t) => new Date(t.created_at) >= cutoff);
+  const alreadyPosted = tweets.some((t) => new Date(t.created_at) >= cutoff);
+
+  return { alreadyPosted, tweets };
 }
 
-function pickBest(tweets) {
+// 直近投稿の冒頭2行を avoidPhrases として抽出
+function buildAvoidPhrases(tweets, max = 20) {
+  return tweets.slice(0, max).map((t) => {
+    const lines = t.text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('http'));
+    return lines.slice(0, 2).join(' / ').slice(0, 60);
+  }).filter((p) => p.length > 0);
+}
+
+// n-gram類似度（4文字単位の共通率）
+function ngramSimilarity(a, b, n = 4) {
+  if (a.length < n || b.length < n) return 0;
+  const grams = new Set();
+  for (let i = 0; i <= a.length - n; i++) grams.add(a.slice(i, i + n));
+  let hit = 0;
+  const total = b.length - n + 1;
+  for (let i = 0; i <= b.length - n; i++) {
+    if (grams.has(b.slice(i, i + n))) hit++;
+  }
+  return hit / total;
+}
+
+function pickBest(tweets, recentTexts) {
   const valid = tweets.filter(
     (t) =>
       t.text.length <= 280 &&
@@ -55,7 +95,22 @@ function pickBest(tweets) {
       !/https?:\/\//.test(t.text)
   );
   const pool = valid.length > 0 ? valid : tweets;
-  return pool.sort(
+
+  // 直近投稿との類似度0.10未満のみを残す
+  const SIMILARITY_THRESHOLD = 0.1;
+  const filtered = pool.filter((t) => {
+    const maxSim = recentTexts.reduce(
+      (max, r) => Math.max(max, ngramSimilarity(t.text, r, 4)),
+      0
+    );
+    return maxSim < SIMILARITY_THRESHOLD;
+  });
+  const finalPool = filtered.length > 0 ? filtered : pool;
+  if (filtered.length === 0 && pool.length > 0) {
+    logger.warn('全候補が直近投稿と類似（しきい値未満なし）。やむを得ず全候補から選定。');
+  }
+
+  return finalPool.sort(
     (a, b) => Math.abs(195 - a.text.length) - Math.abs(195 - b.text.length)
   )[0];
 }
@@ -67,21 +122,44 @@ if (!SLOTS[slotName]) {
 }
 
 const slot = SLOTS[slotName];
-logger.header(`[${slotName}] 自動投稿`);
+const r = pickRotation(slot);
+logger.header(`[${slotName}] 自動投稿 / postType=${r.postType}`);
 
-// 重複防止: 同スロット内の既投稿を確認
-if (await alreadyPostedInSlot(slot.cutoffHourJst)) {
+// 直近投稿を取得して、cutoff判定 + avoidPhrases構築
+const { alreadyPosted, tweets: recent } = await fetchRecentPosts(slot.cutoffHourJst);
+
+if (alreadyPosted) {
   logger.info(`[${slotName}] 本日${slot.cutoffHourJst}時以降に投稿済み。スキップします。`);
   process.exit(0);
 }
 
+const avoidPhrases = buildAvoidPhrases(recent, 20);
+logger.info(`重複ガード: 直近${avoidPhrases.length}件のフレーズを除外指示`);
+
+// 公開時刻・曜日をJSTで組み立て（プロンプトの曜日整合性／時刻矛盾ガード用）
+const jstNow = new Date(Date.now() + 9 * 3600 * 1000);
+const yyyy = jstNow.getUTCFullYear();
+const mm = String(jstNow.getUTCMonth() + 1).padStart(2, '0');
+const dd = String(jstNow.getUTCDate()).padStart(2, '0');
+const hh = String(slotName === 'morning' ? 8 : 21).padStart(2, '0');
+const postingTime = `${yyyy}-${mm}-${dd} ${hh}:00`;
+const dowNames = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+const postingDow = dowNames[jstNow.getUTCDay()];
+logger.info(`投稿コンテキスト: ${postingTime} JST / ${postingDow}`);
+
+const recentTexts = recent.slice(0, 30).map((t) => t.text);
+
 const candidates = await generateMomEntrepreneurTweets({
-  postType: slot.postType,
+  postType: r.postType,
   count: 5,
-  theme: slot.theme,
+  theme: r.theme,
+  avoidPhrases,
+  recentTweets: recentTexts,
+  postingTime,
+  postingDow,
 });
 
-const best = pickBest(candidates);
+const best = pickBest(candidates, recentTexts);
 logger.info(`採用: ${best.text.length}文字 / ${best.postType}`);
 console.log('---本文---');
 console.log(best.text);
