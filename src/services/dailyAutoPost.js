@@ -57,10 +57,24 @@ export async function generateAndScheduleSlot(slotName, targetDate = new Date())
   }
 
   logger.info(`[${slotName}] ツイート5本生成中...`);
+
+  // 投稿コンテキスト（曜日整合性／時刻矛盾防止用）
+  const jstNow = new Date(Date.now() + 9 * 3600 * 1000);
+  const yyyy = jstNow.getUTCFullYear();
+  const mm = String(jstNow.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(jstNow.getUTCDate()).padStart(2, '0');
+  const hh = String(slot.hour).padStart(2, '0');
+  const postingTime = `${yyyy}-${mm}-${dd} ${hh}:00`;
+  const dowNames = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+  const postingDow = dowNames[jstNow.getUTCDay()];
+
   const candidates = await generateMomEntrepreneurTweets({
     postType: slot.postType,
     count: 5,
     theme: slot.theme,
+    postingTime,
+    postingDow,
+    recentTweets: [],  // ローカル運用ではタイムライン取得しない（モチーフ検知はスキップ）
   });
 
   const best = pickBest(candidates);
