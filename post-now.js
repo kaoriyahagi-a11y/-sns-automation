@@ -9,6 +9,49 @@ import { generateMomEntrepreneurTweets } from './src/services/momEntrepreneurGen
 import { postTweet } from './src/platforms/twitter.js';
 import { logger } from './src/utils/logger.js';
 
+// ---- 内容ガード用ヘルパー（2026-05-17追加） ----
+
+// JST 今日の "YYYY-MM-DD（曜日）" 表記を返す
+function getJstTodayInfo() {
+  const jst = new Date(Date.now() + 9 * 3600 * 1000);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(jst.getUTCDate()).padStart(2, '0');
+  const dows = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+  const dow = dows[jst.getUTCDay()];
+  return `${y}-${m}-${d}（${dow}）`;
+}
+
+const SLOT_LABELS = {
+  morning: '朝8時（JST）',
+  evening: '夜21時（JST）',
+};
+
+// 月1回程度に制限したいモチーフ
+const RATE_LIMITED_MOTIFS = ['グミ', 'モンスター'];
+
+// 直近30日のツイート群から、再利用禁止すべきモチーフを抽出
+function detectBannedMotifs(tweets) {
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  const recent = tweets.filter((t) => new Date(t.created_at).getTime() >= cutoff);
+  return RATE_LIMITED_MOTIFS.filter((m) =>
+    recent.some((t) => t.text.includes(m))
+  );
+}
+
+// 時間軸関連の禁止パターン
+const TIME_AXIS_PATTERNS = [
+  /\d{1,2}[:：]\d{2}/,                          // 7:11 / 21:00
+  /\d{1,2}時(\d{1,2}分)?/,                      // 22時 / 7時11分（例外なし）
+  /\d+\s*人(?!間|生|員|参|気)/,                 // 2000人（人間/人生/人員/人参/人気は除外）
+  /(月商|売上|年商|単価|月収|月収入|年収)[^\s]*?\d/, // 月商500万
+  /\d+\s*(分で|時間で|分かけて|時間かけて|分後|時間後)/, // 30分で / 1時間後
+];
+
+function violatesTimeAxis(text) {
+  return TIME_AXIS_PATTERNS.some((p) => p.test(text));
+}
+
 const SLOTS = {
   morning: {
     cutoffHourJst: 7,
