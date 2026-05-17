@@ -35,21 +35,25 @@ function detectBannedMotifs(tweets) {
   const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
   const recent = tweets.filter((t) => new Date(t.created_at).getTime() >= cutoff);
   return RATE_LIMITED_MOTIFS.filter((m) =>
-    recent.some((t) => t.text.includes(m))
+    recent.some((t) => t.text?.includes(m))
   );
 }
 
 // 時間軸関連の禁止パターン
 const TIME_AXIS_PATTERNS = [
   /\d{1,2}[:：]\d{2}/,                          // 7:11 / 21:00
-  /\d{1,2}時(\d{1,2}分)?/,                      // 22時 / 7時11分（例外なし）
-  /\d+\s*人(?!間|生|員|参|気)/,                 // 2000人（人間/人生/人員/人参/人気は除外）
+  /\d{1,2}時(?!間)(\d{1,2}分)?/,                // 22時 / 7時11分（「8時間」等の duration は除外）
+  /\d{2,}\s*人(?!間|生|員|参|気|前|柄|脈|材|数|事|物)/, // 2000人（1人/人参/人前 等は除外）
   /(月商|売上|年商|単価|月収|月収入|年収)[^\s]*?\d/, // 月商500万
   /\d+\s*(分で|時間で|分かけて|時間かけて|分後|時間後)/, // 30分で / 1時間後
 ];
 
 function violatesTimeAxis(text) {
-  return TIME_AXIS_PATTERNS.some((p) => p.test(text));
+  // 全角数字をASCIIに正規化してから判定
+  const normalized = text.replace(/[０-９]/g, (c) =>
+    String.fromCharCode(c.charCodeAt(0) - 0xFEE0)
+  );
+  return TIME_AXIS_PATTERNS.some((p) => p.test(normalized));
 }
 
 const SLOTS = {
