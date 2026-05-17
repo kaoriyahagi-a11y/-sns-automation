@@ -19,14 +19,34 @@ const args = process.argv.slice(2).reduce((acc, a) => {
 const postType = args.type || 'mixed';
 const count = parseInt(args.count || '5', 10);
 const theme = args.theme || '';
+const slotArg = args.slot || 'evening'; // 'morning' | 'evening'
+
+// 投稿コンテキスト（曜日整合性／時刻矛盾防止用）
+const jstNow = new Date(Date.now() + 9 * 3600 * 1000);
+const yyyy = jstNow.getUTCFullYear();
+const mm = String(jstNow.getUTCMonth() + 1).padStart(2, '0');
+const dd = String(jstNow.getUTCDate()).padStart(2, '0');
+const slotHour = slotArg === 'morning' ? 8 : 21;
+const hh = String(slotHour).padStart(2, '0');
+const postingTime = `${yyyy}-${mm}-${dd} ${hh}:00`;
+const dowNames = ['日曜日', '月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日'];
+const postingDow = dowNames[jstNow.getUTCDay()];
 
 logger.header(`矢萩香織 X投稿生成（@ORI2024202463 / ORI MAMA）`);
 console.log(`  タイプ: ${postType === 'mixed' ? 'ミックス（5タイプをバランスよく）' : POST_TYPES[postType]?.label || postType}`);
 console.log(`  本数: ${count}`);
 if (theme) console.log(`  テーマ: ${theme}`);
+console.log(`  スロット: ${slotArg}（${postingTime} JST / ${postingDow}）`);
 logger.divider();
 
-const tweets = await generateMomEntrepreneurTweets({ postType, count, theme });
+const tweets = await generateMomEntrepreneurTweets({
+  postType,
+  count,
+  theme,
+  postingTime,
+  postingDow,
+  recentTweets: [],  // 手動検証ではタイムライン取得しない（モチーフ検知はスキップ）
+});
 
 const typeColor = {
   narrative: chalk.bgMagenta.white,
