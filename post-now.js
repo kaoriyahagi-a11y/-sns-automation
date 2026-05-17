@@ -134,16 +134,25 @@ function ngramSimilarity(a, b, n = 4) {
 }
 
 function pickBest(tweets, recentTexts) {
-  const valid = tweets.filter(
+  const baseValid = tweets.filter(
     (t) =>
       t.text.length <= 280 &&
       /#ORIMAMA\b/.test(t.text) &&
       !/[。、「」]/.test(t.text) &&
       !/https?:\/\//.test(t.text)
   );
-  const pool = valid.length > 0 ? valid : tweets;
+  const valid = baseValid.filter((t) => !violatesTimeAxis(t.text));
 
-  // 直近投稿との類似度0.10未満のみを残す
+  if (baseValid.length > 0 && valid.length === 0) {
+    logger.warn(
+      `全候補が時間軸ルール違反。基本条件は満たすプールから195字に近いものを採用します。`
+    );
+  }
+
+  // 違反フィルタで全滅したら baseValid（基本条件OKな集合）で代用、それも空なら tweets
+  const pool = valid.length > 0 ? valid : baseValid.length > 0 ? baseValid : tweets;
+
+  // 直近投稿との類似度0.10未満のみを残す（既存ロジック）
   const SIMILARITY_THRESHOLD = 0.1;
   const filtered = pool.filter((t) => {
     const maxSim = recentTexts.reduce(
