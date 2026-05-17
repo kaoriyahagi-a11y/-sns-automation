@@ -91,7 +91,7 @@ async function fetchRecentPosts(cutoffHourJst) {
   });
   const me = await client.v2.me();
   const tl = await client.v2.userTimeline(me.data.id, {
-    max_results: 30,
+    max_results: 60,  // 1日2投稿×30日相当（直近モチーフ検出のため）
     'tweet.fields': ['created_at'],
     exclude: ['retweets', 'replies'],
   });
@@ -181,7 +181,7 @@ const slot = SLOTS[slotName];
 const r = pickRotation(slot);
 logger.header(`[${slotName}] 自動投稿 / postType=${r.postType}`);
 
-// 直近投稿を取得して、cutoff判定 + avoidPhrases構築
+// 直近投稿を取得して、cutoff判定 + avoidPhrases構築 + モチーフ検出
 const { alreadyPosted, tweets: recent } = await fetchRecentPosts(slot.cutoffHourJst);
 
 if (alreadyPosted) {
@@ -191,6 +191,14 @@ if (alreadyPosted) {
 
 const avoidPhrases = buildAvoidPhrases(recent, 20);
 logger.info(`重複ガード: 直近${avoidPhrases.length}件のフレーズを除外指示`);
+
+const todayJst = getJstTodayInfo();
+const slotInfo = SLOT_LABELS[slotName];
+const bannedMotifs = detectBannedMotifs(recent);
+logger.info(`日付/スロット: ${todayJst} / ${slotInfo}`);
+if (bannedMotifs.length > 0) {
+  logger.info(`禁止モチーフ（直近30日に使用済み）: ${bannedMotifs.join('、')}`);
+}
 
 // 公開時刻・曜日をJSTで組み立て（プロンプトの曜日整合性／時刻矛盾ガード用）
 const jstNow = new Date(Date.now() + 9 * 3600 * 1000);
@@ -213,6 +221,9 @@ const candidates = await generateMomEntrepreneurTweets({
   recentTweets: recentTexts,
   postingTime,
   postingDow,
+  todayJst,
+  slotInfo,
+  bannedMotifs,
 });
 
 const best = pickBest(candidates, recentTexts);
