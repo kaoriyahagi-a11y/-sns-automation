@@ -217,8 +217,14 @@ def write_mf_import_tab(sheets, ss_id, month_label, rows, drive_url):
     out_rows = [MF_HEADERS]
     for r in rows:
         out_rows.append([r.get(k, '') for k in MF_HEADERS])
+    if not rows:
+        out_rows.append([])
+        out_rows.append(['（確定行がありません。仕訳案タブで A列「確定」を入力後、再実行してください）'])
     out_rows.append([])
-    out_rows.append([f'=HYPERLINK("{drive_url}","📥 CSVダウンロード")'])
+    if drive_url and drive_url.startswith('http'):
+        out_rows.append([f'=HYPERLINK("{drive_url}","📥 CSVダウンロード")'])
+    else:
+        out_rows.append([f'ローカル CSV: {drive_url} (Drive 未設定)'])
 
     sheets.spreadsheets().values().clear(
         spreadsheetId=ss_id, range=f"'{tab_name}'!A:S"
@@ -228,6 +234,33 @@ def write_mf_import_tab(sheets, ss_id, month_label, rows, drive_url):
         valueInputOption='USER_ENTERED',
         body={'values': out_rows},
     ).execute()
+
+    # ヘッダ書式 + フリーズ
+    sheets.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={
+        'requests': [
+            {'updateSheetProperties': {
+                'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
+                'fields': 'gridProperties.frozenRowCount',
+            }},
+            {'repeatCell': {
+                'range': {'sheetId': gid, 'startRowIndex': 0, 'endRowIndex': 1,
+                          'startColumnIndex': 0, 'endColumnIndex': len(MF_HEADERS)},
+                'cell': {'userEnteredFormat': {
+                    'backgroundColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
+                    'textFormat': {
+                        'foregroundColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                        'bold': True, 'fontSize': 11,
+                    },
+                    'horizontalAlignment': 'CENTER',
+                }},
+                'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)',
+            }},
+            {'autoResizeDimensions': {
+                'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',
+                               'startIndex': 0, 'endIndex': len(MF_HEADERS)},
+            }},
+        ]
+    }).execute()
     return tab_name, gid
 
 
@@ -246,9 +279,7 @@ def main():
     drive = build('drive', 'v3', credentials=creds)
 
     confirmed = _read_confirmed_proposals(sheets, SS_ID, yymm)
-    if not confirmed:
-        print('[WARN] 確定済仕訳が0件です。CSV生成スキップ。')
-        return
+    print(f'[INFO] 確定済仕訳: {len(confirmed)} 件')
 
     mf_rows = []
     tx_no = 0
@@ -262,10 +293,7 @@ def main():
             continue
         mf_rows.extend(expand_to_mf_rows(proposal, tx_no))
 
-    if not mf_rows:
-        print('[WARN] 有効な仕訳が0件です。CSV生成スキップ。')
-        return
-
+    # CSVファイル生成 (0件でもヘッダのみのファイルを作る)
     ts = datetime.now().strftime('%Y%m%d-%H%M')
     fname = f'MF取込_中原_{month_label}_{ts}.csv'
     local_path = os.path.join(WORK_DIR, fname)
@@ -274,14 +302,20 @@ def main():
 
     drive_url = ''
     if args.drive_folder:
-        drive_url = upload_to_drive(drive, local_path, args.drive_folder, fname)
-        print(f'[INFO] Drive アップロード: {drive_url}')
-    else:
-        print('[WARN] --drive-folder 未指定。Drive アップロードはスキップ。')
+        try:
+            drive_url = upload_to_drive(drive, local_path, args.drive_folder, fname)
+            print(f'[INFO] Drive アップロード: {drive_url}')
+        except Exception as e:
+            print(f'[WARN] Drive アップロード失敗: {e}', file=sys.stderr)
 
+    # SS タブは常に作成 (0件でもヘッダだけ書く)
     tab_name, gid = write_mf_import_tab(sheets, SS_ID, month_label, mf_rows, drive_url or local_path)
     print(f'[OK] {tab_name} タブ生成 (gid={gid})')
-    print(f'     確定済 {len(confirmed)} 仕訳 → CSV {len(mf_rows)} 行 (スキップ {skip_count})')
+    print(f'     URL: https://docs.google.com/spreadsheets/d/{SS_ID}/edit#gid={gid}')
+    if not confirmed:
+        print(f'[INFO] 仕訳案タブのA列で「確定」を選んでから再実行すると CSV に反映されます。')
+    else:
+        print(f'     確定済 {len(confirmed)} 仕訳 → CSV {len(mf_rows)} 行 (スキップ {skip_count})')
 
 
 if __name__ == '__main__':
