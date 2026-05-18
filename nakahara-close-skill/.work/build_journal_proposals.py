@@ -34,14 +34,16 @@ PROPOSAL_HEADERS = [
 ]
 
 DEFAULT_BY_TYPE = {
+    # 中原水産は鮮魚卸しなので 仕入/売上 は基本 8% 軽減税率がデフォルト
     '仕入': {
-        'debit_account': '仕入高【10％】', 'debit_tax': '課税仕入 10%',
+        'debit_account': '仕入高【8％】', 'debit_tax': '課税仕入 (軽)8%',
         'credit_account': '買掛金', 'credit_tax': '対象外',
     },
     '売上': {
         'debit_account': '売掛金', 'debit_tax': '対象外',
-        'credit_account': '売上高【10％】', 'credit_tax': '課税売上 10%',
+        'credit_account': '売上高【8％】', 'credit_tax': '課税売上 (軽)8%',
     },
+    # 固定費・業務委託・立替は 10% (標準税率)
     '固定費': {
         'debit_account': '支払手数料', 'debit_tax': '課税仕入 10%',
         'credit_account': '普通預金', 'credit_tax': '対象外',

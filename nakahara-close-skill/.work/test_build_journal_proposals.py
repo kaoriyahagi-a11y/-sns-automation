@@ -91,29 +91,29 @@ class TestBuildProposal(unittest.TestCase):
         self.assertEqual(row['マッピング判定'], '要確認')
 
     def test_unmapped_purchase_section_uses_default(self):
-        """未登録 + 仕入セクション → 仕入高【10％】 デフォルト"""
+        """未登録 + 仕入セクション → 仕入高【8％】 デフォルト (鮮魚卸し前提)"""
         v34 = {
             'partner': '謎の新規取引先', 'date': '2026/04/15',
             'section': '仕入', 'amount': 50000,
-            'subtotal_8': 0, 'subtotal_10': 50000,
+            'subtotal_8': 50000, 'subtotal_10': 0,
         }
         row = build_proposal_row(v34, {}, '4')
         self.assertEqual(row['マッピング判定'], '未登録')
         self.assertEqual(row['取引種別'], '仕入')
-        self.assertEqual(row['借方勘定科目'], '仕入高【10％】')
+        self.assertEqual(row['借方勘定科目'], '仕入高【8％】')
         self.assertEqual(row['貸方勘定科目'], '買掛金')
 
     def test_unmapped_sales_section_uses_default(self):
-        """未登録 + 売上セクション → 売上高【10％】 デフォルト"""
+        """未登録 + 売上セクション → 売上高【8％】 デフォルト (鮮魚卸し前提)"""
         v34 = {
             'partner': '謎の新規売上先', 'date': '2026/04/30',
             'section': '売上15〆', 'amount': 100000,
-            'subtotal_8': 0, 'subtotal_10': 100000,
+            'subtotal_8': 100000, 'subtotal_10': 0,
         }
         row = build_proposal_row(v34, {}, '4')
         self.assertEqual(row['取引種別'], '売上')
         self.assertEqual(row['借方勘定科目'], '売掛金')
-        self.assertEqual(row['貸方勘定科目'], '売上高【10％】')
+        self.assertEqual(row['貸方勘定科目'], '売上高【8％】')
 
     def test_mixed_tax_rate(self):
         """8%+10% 混在: Q/R 列に内訳保持"""
