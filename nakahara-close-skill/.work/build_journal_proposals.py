@@ -9,7 +9,9 @@
 import argparse
 import json
 import os
+import re
 import sys
+import unicodedata
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK_DIR = os.path.join(PROJECT_ROOT, '.work').replace('\\', '/')
@@ -51,6 +53,73 @@ DEFAULT_BY_TYPE = {
 }
 
 
+_COMPANY_PREFIX_RE = re.compile(
+    r'(株式会社|有限会社|合同会社|合資会社|合名会社|㈱|㈲|\(株\)|\(有\)|\(合\))'
+)
+_TAX_SUFFIX_RE = re.compile(r'\s*/\s*\d+[%％].*$')
+
+
+def _normalize_partner(name):
+    """取引先名を比較用に正規化。
+
+    - NFKC正規化 (全角→半角)
+    - 株式会社/有限会社等プレフィックス・サフィックス除去
+    - 「/ 10％」のような税率併記サフィックス除去
+    - 全空白除去
+    - lowercase
+    """
+    if not name:
+        return ''
+    s = unicodedata.normalize('NFKC', str(name))
+    s = _TAX_SUFFIX_RE.sub('', s)
+    s = _COMPANY_PREFIX_RE.sub('', s)
+    s = re.sub(r'[\s　]+', '', s)
+    return s.lower()
+
+
+def _build_normalized_index(mapping):
+    """マッピング辞書から {normalized_partner: [(original_name, entry), ...]} を構築。
+
+    同一 normalize に複数取引先がぶつかる (税率違い等) ケースを保持。
+    """
+    index = {}
+    for name, entry in mapping.items():
+        key = _normalize_partner(name)
+        if not key:
+            continue
+        index.setdefault(key, []).append((name, entry))
+    return index
+
+
+def _lookup_mapping(partner, mapping, normalized_index):
+    """取引先名から mapping エントリを探す。
+
+    1. 完全一致 → 優先
+    2. normalize 一致 (単一マッチ) → 採用
+    3. normalize 複数マッチ → 信頼度高いものを採用 + 要確認フラグ
+    4. なし → None
+    """
+    if partner in mapping:
+        return mapping[partner], 'exact'
+    norm = _normalize_partner(partner)
+    if not norm:
+        return None, 'unmapped'
+    candidates = normalized_index.get(norm, [])
+    if not candidates:
+        return None, 'unmapped'
+    if len(candidates) == 1:
+        return candidates[0][1], 'normalized'
+    # 複数 → 信頼度+出現回数で並び替えてトップを採用
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda x: (
+            {'高': 0, '中': 1, '低': 2, '未登録': 3}.get(x[1].get('confidence', '低'), 3),
+            -x[1].get('occurrences', 0),
+        ),
+    )
+    return candidates_sorted[0][1], 'ambiguous'
+
+
 def _infer_type_from_section(section):
     if section is None:
         return '固定費'
@@ -64,13 +133,14 @@ def _infer_type_from_section(section):
     return '固定費'
 
 
-def build_proposal_row(v34_row, mapping, month):
+def build_proposal_row(v34_row, mapping, month, normalized_index=None):
     """試作v34 1行 → 仕訳案 1行 (dict)
 
     Args:
       v34_row: dict with keys {partner, date, section, amount, subtotal_8, subtotal_10, pdf_link}
       mapping: dict[partner_name -> mapping_entry]
       month: str (1-12)
+      normalized_index: 取引先名正規化キー → [(原名, エントリ)...]
     """
     partner = v34_row.get('partner') or ''
     section = v34_row.get('section') or ''
@@ -78,19 +148,24 @@ def build_proposal_row(v34_row, mapping, month):
     sub8 = int(v34_row.get('subtotal_8') or 0)
     sub10 = int(v34_row.get('subtotal_10') or 0)
 
-    if partner in mapping:
-        m = mapping[partner]
-        confidence = m.get('confidence', '低')
-        if confidence in ('高', '中'):
-            judgment = 'OK'
-        else:
-            judgment = '要確認'
-    else:
+    if normalized_index is None:
+        normalized_index = _build_normalized_index(mapping)
+
+    m, match_kind = _lookup_mapping(partner, mapping, normalized_index)
+    if m is None:
         tx_type = _infer_type_from_section(section)
         m = {**DEFAULT_BY_TYPE.get(tx_type, DEFAULT_BY_TYPE['固定費']),
              'type': tx_type,
              'summary_template': '{partner} {month}月分'}
         judgment = '未登録'
+    else:
+        confidence = m.get('confidence', '低')
+        if match_kind == 'ambiguous':
+            judgment = '要確認'  # 複数候補ヒット → 人間レビュー必須
+        elif confidence in ('高', '中'):
+            judgment = 'OK'
+        else:
+            judgment = '要確認'
 
     summary_template = m.get('summary_template') or '{partner} {month}月分'
     summary = summary_template.format(partner=partner, month=month)
@@ -171,8 +246,30 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
     return mapping
 
 
+def _coerce_int(value):
+    if value is None or value == '':
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip().replace(',', '').replace('¥', '').replace('￥', '').replace('円', '')
+    if s in ('', '-', '−'):
+        return 0
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _read_shisaku_v34(sheets, ss_id, yymm):
-    """試作v34 シートから仕訳生成入力行を読込。
+    """試作v34 シートから仕訳生成入力行を読込 (multi-section 対応)
+
+    試作v34 は以下のような構造:
+      - Row 1-3: コメント/メタ
+      - Row 5-10: サマリ
+      - Row 12: セクション見出し 【売上 15〆請求書】
+      - Row 13: 列ヘッダ [Row(一覧), 締日, 取引先, ...]
+      - Row 14+: データ行
+      - 次のセクション見出し → 次のヘッダ → ...
 
     Returns: list[dict] (key: partner, date, section, amount, subtotal_8, subtotal_10, pdf_link)
     """
@@ -190,63 +287,102 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
     if len(rows) < 5:
         sys.exit(f'ERROR: 試作v34 タブが空です: {tab_name}')
 
-    # ヘッダ行検出 (Row 3 or 4 想定)
-    header_idx = None
-    for i in range(min(6, len(rows))):
-        joined = ' '.join(str(c) for c in rows[i])
-        if '取引先' in joined or 'クライアント' in joined or '仕入先' in joined:
-            header_idx = i
-            break
-    if header_idx is None:
-        header_idx = 3  # フォールバック
-
-    headers = rows[header_idx]
     out = []
     current_section = '不明'
-    for r in rows[header_idx + 1:]:
+    current_headers = None
+    header_keywords = ('取引先', 'クライアント', '仕入先')
+
+    for r in rows:
         if not r or not any(str(c).strip() for c in r):
             continue
-        # セクション見出し行を検出 (1セル目だけで内容ある等)
-        joined = ' '.join(str(c).strip() for c in r if str(c).strip())
-        if any(kw in joined for kw in ['15〆', '末〆', '仕入', '売上', 'その他']):
-            if len([c for c in r if str(c).strip()]) <= 2:
-                current_section = joined
+        non_empty = [c for c in r if str(c).strip()]
+        first_cell = str(r[0]).strip() if r else ''
+        joined = ' '.join(str(c) for c in r)
+
+        # セクション見出し行: 「【...】」開始の単一セル or 「【売上 15〆...】」型
+        if first_cell.startswith('【') and '】' in first_cell:
+            current_section = first_cell
+            current_headers = None  # 次のヘッダで再設定
+            continue
+
+        # コメント行 (# で始まる) スキップ
+        if first_cell.startswith('#'):
+            continue
+
+        # サマリ行スキップ (【サマリ】 の後の小集計)
+        if 'サマリ' in joined and len(non_empty) <= 3:
+            continue
+
+        # 列ヘッダ行検出: 取引先/クライアント/仕入先 + 構造的指標
+        if any(kw in joined for kw in header_keywords):
+            if any(ind in joined for ind in ('リンク', 'PDF', '金額', '締日', '振込日', '入金予定日')):
+                current_headers = list(r)
                 continue
 
-        row_dict = {h: (r[i] if i < len(r) else '') for i, h in enumerate(headers)}
+        if not current_headers:
+            continue
+
+        # データ行
+        row_dict = {h: (r[i] if i < len(r) else '') for i, h in enumerate(current_headers)}
         partner = (
             row_dict.get('取引先')
             or row_dict.get('クライアント')
             or row_dict.get('仕入先')
             or ''
         )
-        if not partner or not str(partner).strip():
+        partner = str(partner).strip()
+        if not partner or partner in ('-', '−'):
             continue
-        amount = row_dict.get('最終金額(税込)') or row_dict.get('金額(税込)') or row_dict.get('金額') or 0
-        try:
-            amount = int(amount) if amount else 0
-        except (ValueError, TypeError):
-            amount = 0
+
+        # 金額: 候補列を順に試す
+        amount = 0
+        for ac in (
+            '最終金額(税込)', '売上金額(税込)', '仕入金額(税込)',
+            '金額(税込)', '金額', '請求金額', '実額(税込)',
+        ):
+            v = row_dict.get(ac)
+            if v is not None and str(v).strip() not in ('', '-', '−'):
+                amount = _coerce_int(v)
+                if amount:
+                    break
         if amount <= 0:
             continue
 
-        sub8 = row_dict.get('8%対象(税込)') or 0
-        sub10 = row_dict.get('10%対象(税込)') or 0
-        try:
-            sub8 = int(sub8) if sub8 else 0
-            sub10 = int(sub10) if sub10 else 0
-        except (ValueError, TypeError):
-            sub8 = 0
-            sub10 = 0
+        # 税率内訳 (B2で追加される)
+        sub8 = 0
+        sub10 = 0
+        for k, v in row_dict.items():
+            ks = str(k)
+            if '8%対象' in ks or '8％対象' in ks:
+                sub8 = _coerce_int(v)
+            elif '10%対象' in ks or '10％対象' in ks:
+                sub10 = _coerce_int(v)
+
+        # 日付
+        date = (
+            row_dict.get('振込日')
+            or row_dict.get('入金予定日')
+            or row_dict.get('締日')
+            or ''
+        )
+
+        # PDFリンク
+        pdf_link = (
+            row_dict.get('請求書PDFリンク')
+            or row_dict.get('PDFリンク')
+            or row_dict.get('リンク')
+            or row_dict.get('SSリンク')
+            or ''
+        )
 
         out.append({
-            'partner': str(partner).strip(),
-            'date': row_dict.get('振込日') or row_dict.get('入金予定日') or '',
+            'partner': partner,
+            'date': str(date),
             'section': current_section,
             'amount': amount,
             'subtotal_8': sub8,
             'subtotal_10': sub10,
-            'pdf_link': row_dict.get('リンク') or '',
+            'pdf_link': str(pdf_link),
         })
     return out
 
@@ -304,52 +440,163 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
         body={'values': out_rows},
     ).execute()
 
-    # A列 プルダウン (確定/保留/却下)
-    sheets.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={
-        'requests': [
-            {
-                'setDataValidation': {
-                    'range': {'sheetId': gid, 'startRowIndex': 1,
-                              'startColumnIndex': 0, 'endColumnIndex': 1},
-                    'rule': {
-                        'condition': {
-                            'type': 'ONE_OF_LIST',
-                            'values': [
-                                {'userEnteredValue': '確定'},
-                                {'userEnteredValue': '保留'},
-                                {'userEnteredValue': '却下'},
-                            ],
-                        },
-                        'showCustomUi': True,
-                    }
-                }
-            },
-            # O列 条件付き書式 (OK=緑/要確認=黄/未登録=赤) → 3 requests
-            *[
-                {
-                    'addConditionalFormatRule': {
-                        'rule': {
-                            'ranges': [{'sheetId': gid, 'startRowIndex': 1,
-                                        'startColumnIndex': 14, 'endColumnIndex': 15}],
-                            'booleanRule': {
-                                'condition': {
-                                    'type': 'TEXT_EQ',
-                                    'values': [{'userEnteredValue': val}],
-                                },
-                                'format': {'backgroundColor': color},
-                            }
-                        },
-                        'index': i,
-                    }
-                }
-                for i, (val, color) in enumerate([
-                    ('OK', {'red': 0.85, 'green': 0.95, 'blue': 0.85}),
-                    ('要確認', {'red': 1.0, 'green': 0.95, 'blue': 0.7}),
-                    ('未登録', {'red': 1.0, 'green': 0.85, 'blue': 0.85}),
-                ])
-            ],
-        ]
-    }).execute()
+    # === 視覚整理 + プルダウン + 条件付き書式 ===
+    requests = [
+        # 1行目フリーズ
+        {'updateSheetProperties': {
+            'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
+            'fields': 'gridProperties.frozenRowCount',
+        }},
+        # ヘッダ行を太字+紺色背景+白文字
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 0, 'endRowIndex': 1,
+                      'startColumnIndex': 0, 'endColumnIndex': 18},
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
+                'textFormat': {
+                    'foregroundColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                    'bold': True, 'fontSize': 11,
+                },
+                'horizontalAlignment': 'CENTER',
+                'verticalAlignment': 'MIDDLE',
+            }},
+            'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+        }},
+        # H列 (借方金額) と L列 (貸方金額) を金額フォーマット
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 7, 'endColumnIndex': 8},
+            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+            'fields': 'userEnteredFormat.numberFormat',
+        }},
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 11, 'endColumnIndex': 12},
+            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+            'fields': 'userEnteredFormat.numberFormat',
+        }},
+        # Q,R列 (税率内訳) も金額フォーマット
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 16, 'endColumnIndex': 18},
+            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+            'fields': 'userEnteredFormat.numberFormat',
+        }},
+        # A列 プルダウン (確定/保留/却下)
+        {'setDataValidation': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 0, 'endColumnIndex': 1},
+            'rule': {
+                'condition': {
+                    'type': 'ONE_OF_LIST',
+                    'values': [
+                        {'userEnteredValue': '確定'},
+                        {'userEnteredValue': '保留'},
+                        {'userEnteredValue': '却下'},
+                    ],
+                },
+                'showCustomUi': True,
+            }
+        }},
+        # 列幅自動調整 (全体)
+        {'autoResizeDimensions': {
+            'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',
+                           'startIndex': 0, 'endIndex': 18},
+        }},
+    ]
+    # A列 (確定状態) 条件付き書式
+    state_colors = [
+        ('確定', {'red': 0.78, 'green': 0.93, 'blue': 0.78}),
+        ('保留', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
+        ('却下', {'red': 0.85, 'green': 0.85, 'blue': 0.85}),
+    ]
+    for i, (val, color) in enumerate(state_colors):
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                                'startColumnIndex': 0, 'endColumnIndex': 1}],
+                    'booleanRule': {
+                        'condition': {'type': 'TEXT_EQ',
+                                      'values': [{'userEnteredValue': val}]},
+                        'format': {'backgroundColor': color,
+                                   'textFormat': {'bold': True}},
+                    },
+                },
+                'index': i,
+            }
+        })
+    # C列 (取引種別) 条件付き書式
+    type_colors = [
+        ('仕入', {'red': 0.85, 'green': 0.93, 'blue': 1.0}),
+        ('売上', {'red': 1.0, 'green': 0.92, 'blue': 0.83}),
+        ('固定費', {'red': 0.92, 'green': 0.92, 'blue': 0.92}),
+        ('立替', {'red': 1.0, 'green': 0.98, 'blue': 0.80}),
+    ]
+    base = len(state_colors)
+    for i, (val, color) in enumerate(type_colors):
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                                'startColumnIndex': 2, 'endColumnIndex': 3}],
+                    'booleanRule': {
+                        'condition': {'type': 'TEXT_EQ',
+                                      'values': [{'userEnteredValue': val}]},
+                        'format': {'backgroundColor': color},
+                    },
+                },
+                'index': base + i,
+            }
+        })
+    # O列 (マッピング判定) 条件付き書式
+    judg_colors = [
+        ('OK', {'red': 0.85, 'green': 0.95, 'blue': 0.85}),
+        ('要確認', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
+        ('未登録', {'red': 1.0, 'green': 0.85, 'blue': 0.85}),
+    ]
+    base += len(type_colors)
+    for i, (val, color) in enumerate(judg_colors):
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                                'startColumnIndex': 14, 'endColumnIndex': 15}],
+                    'booleanRule': {
+                        'condition': {'type': 'TEXT_EQ',
+                                      'values': [{'userEnteredValue': val}]},
+                        'format': {'backgroundColor': color,
+                                   'textFormat': {'bold': True}},
+                    },
+                },
+                'index': base + i,
+            }
+        })
+    # 交互行 banding
+    requests.append({
+        'addBanding': {
+            'bandedRange': {
+                'range': {'sheetId': gid, 'startRowIndex': 0,
+                          'startColumnIndex': 0, 'endColumnIndex': 18},
+                'rowProperties': {
+                    'headerColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
+                    'firstBandColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                    'secondBandColor': {'red': 0.97, 'green': 0.97, 'blue': 0.97},
+                },
+            }
+        }
+    })
+    try:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={
+            'requests': requests
+        }).execute()
+    except Exception as e:
+        # 既存 banding 等とコンフリクト時は banding を抜いて再試行
+        print(f'[WARN] 書式設定 warning: {e}', file=sys.stderr)
+        req2 = [r for r in requests if 'addBanding' not in r and 'addConditionalFormatRule' not in r]
+        sheets.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={
+            'requests': req2
+        }).execute()
 
     return tab_name, gid, len(out_rows) - 1
 
@@ -375,8 +622,9 @@ def main():
     v34_rows = _read_shisaku_v34(sheets, SS_ID, yymm)
     print(f'[INFO] 試作v34 行: {len(v34_rows)} 件')
 
-    # 仕訳案行生成
-    proposal_rows = [build_proposal_row(r, mapping, month) for r in v34_rows]
+    # 仕訳案行生成 (正規化 index で fuzzy lookup)
+    normalized_index = _build_normalized_index(mapping)
+    proposal_rows = [build_proposal_row(r, mapping, month, normalized_index) for r in v34_rows]
 
     # 書込
     tab_name, gid, count = write_proposal_tab(sheets, SS_ID, month_label, proposal_rows)

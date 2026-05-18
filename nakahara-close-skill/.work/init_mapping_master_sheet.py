@@ -144,21 +144,114 @@ def main():
         body={'values': out},
     ).execute()
 
-    # J列にチェックボックス Data Validation を設定
-    sheets.spreadsheets().batchUpdate(spreadsheetId=SS_ID, body={
-        'requests': [{
-            'setDataValidation': {
-                'range': {
-                    'sheetId': gid, 'startRowIndex': 1,
-                    'startColumnIndex': 9, 'endColumnIndex': 10,
+    # === 視覚整理: ヘッダ書式 + 凍結 + 条件付き書式 + チェックボックス ===
+    # 種別色: 仕入=薄青 / 売上=薄橙 / 固定費=薄灰 / 立替=薄黄 / 振替=薄紫
+    type_colors = [
+        ('仕入', {'red': 0.85, 'green': 0.93, 'blue': 1.0}),
+        ('売上', {'red': 1.0, 'green': 0.92, 'blue': 0.83}),
+        ('固定費', {'red': 0.92, 'green': 0.92, 'blue': 0.92}),
+        ('立替', {'red': 1.0, 'green': 0.98, 'blue': 0.80}),
+        ('振替', {'red': 0.93, 'green': 0.88, 'blue': 0.97}),
+    ]
+    # 信頼度色: 高=緑 / 中=黄 / 低=薄赤
+    conf_colors = [
+        ('高', {'red': 0.78, 'green': 0.93, 'blue': 0.78}),
+        ('中', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
+        ('低', {'red': 1.0, 'green': 0.88, 'blue': 0.88}),
+    ]
+    requests = [
+        # 1行目固定 (フリーズ)
+        {'updateSheetProperties': {
+            'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
+            'fields': 'gridProperties.frozenRowCount',
+        }},
+        # ヘッダ行 (Row 1) を太字 + 紺色背景 + 白文字
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 0, 'endRowIndex': 1,
+                      'startColumnIndex': 0, 'endColumnIndex': 10},
+            'cell': {'userEnteredFormat': {
+                'backgroundColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
+                'textFormat': {
+                    'foregroundColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                    'bold': True, 'fontSize': 11,
                 },
+                'horizontalAlignment': 'CENTER',
+                'verticalAlignment': 'MIDDLE',
+            }},
+            'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
+        }},
+        # J列 (ロック) にチェックボックス
+        {'setDataValidation': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 9, 'endColumnIndex': 10},
+            'rule': {'condition': {'type': 'BOOLEAN'}, 'showCustomUi': True},
+        }},
+        # 列幅自動調整
+        {'autoResizeDimensions': {
+            'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',
+                           'startIndex': 0, 'endIndex': 10},
+        }},
+    ]
+    # 種別列 (B列, index=1) 条件付き書式
+    for i, (val, color) in enumerate(type_colors):
+        requests.append({
+            'addConditionalFormatRule': {
                 'rule': {
-                    'condition': {'type': 'BOOLEAN'},
-                    'showCustomUi': True,
+                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                                'startColumnIndex': 1, 'endColumnIndex': 2}],
+                    'booleanRule': {
+                        'condition': {'type': 'TEXT_EQ',
+                                      'values': [{'userEnteredValue': val}]},
+                        'format': {'backgroundColor': color},
+                    },
+                },
+                'index': i,
+            }
+        })
+    # 信頼度列 (H列, index=7) 条件付き書式
+    for j, (val, color) in enumerate(conf_colors):
+        requests.append({
+            'addConditionalFormatRule': {
+                'rule': {
+                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                                'startColumnIndex': 7, 'endColumnIndex': 8}],
+                    'booleanRule': {
+                        'condition': {'type': 'TEXT_EQ',
+                                      'values': [{'userEnteredValue': val}]},
+                        'format': {
+                            'backgroundColor': color,
+                            'textFormat': {'bold': True},
+                        },
+                    },
+                },
+                'index': len(type_colors) + j,
+            }
+        })
+    # 交互行ベースカラー (奇数行を淡くする) — banding
+    requests.append({
+        'addBanding': {
+            'bandedRange': {
+                'range': {'sheetId': gid, 'startRowIndex': 0,
+                          'startColumnIndex': 0, 'endColumnIndex': 10},
+                'rowProperties': {
+                    'headerColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
+                    'firstBandColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
+                    'secondBandColor': {'red': 0.97, 'green': 0.97, 'blue': 0.97},
                 },
             }
-        }]
-    }).execute()
+        }
+    })
+    try:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=SS_ID, body={
+            'requests': requests
+        }).execute()
+    except Exception as e:
+        # banding が既に存在する場合等のリトライ (banding 除外して再実行)
+        print(f'[WARN] 書式設定で warning: {e}', file=sys.stderr)
+        requests_no_band = [r for r in requests if 'addBanding' not in r]
+        sheets.spreadsheets().batchUpdate(spreadsheetId=SS_ID, body={
+            'requests': requests_no_band
+        }).execute()
 
     print(f'[OK] _仕訳マッピング_中原 タブに {len(out) - 1} 行 (ロック保持: {len(locked)}, 新規: {len(new_rows)})')
     print(f'     URL: https://docs.google.com/spreadsheets/d/{SS_ID}/edit#gid={gid}')
