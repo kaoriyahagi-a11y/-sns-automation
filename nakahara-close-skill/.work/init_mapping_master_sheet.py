@@ -28,8 +28,10 @@ SCOPES = [
 HEADERS = [
     '取引先名', '種別', '借方勘定科目', '借方税区分',
     '貸方勘定科目', '貸方税区分', '摘要テンプレ',
-    '信頼度', '出現回数', 'ロック',
+    '税抜額(累計)', '平均税抜額', '信頼度', '出現回数', '請求書OK',
 ]
+# 12列 (A:取引先名 ... L:請求書OK)
+LOCK_COL_INDEX = 11  # 0始まりで L列
 LOCK_TRUE_VALUES = {'✓', '✔', 'TRUE', 'true', '1', 'YES', 'yes'}
 
 
@@ -65,23 +67,23 @@ def get_or_create_tab(sheets, ss_id, tab_name):
 
 
 def load_existing_rows(sheets, ss_id, tab_name):
-    """既存タブから全データ行を読込"""
+    """既存タブから全データ行を読込 (12列)"""
     try:
         resp = sheets.spreadsheets().values().get(
-            spreadsheetId=ss_id, range=f"'{tab_name}'!A2:J"
+            spreadsheetId=ss_id, range=f"'{tab_name}'!A2:L"
         ).execute()
     except Exception:
         return []
     values = resp.get('values', [])
     out = []
     for row in values:
-        row = (list(row) + [''] * 10)[:10]
+        row = (list(row) + [''] * 12)[:12]
         out.append(row)
     return out
 
 
 def is_locked(row):
-    return (row[9] or '').strip() in LOCK_TRUE_VALUES
+    return (row[LOCK_COL_INDEX] or '').strip() in LOCK_TRUE_VALUES
 
 
 def main():
@@ -125,17 +127,17 @@ def main():
             p['credit_account'],
             p['credit_tax'],
             p['summary_template'],
+            p.get('amount_excl_total', 0),
+            p.get('amount_excl_avg', 0),
             p['confidence'],
-            str(p['occurrences']),
+            p['occurrences'],
             '',
         ])
 
-    # ヘッダ + ロック + 新規 を結合
     out = [HEADERS] + locked + new_rows
 
-    # 既存タブを clear → 書込
     sheets.spreadsheets().values().clear(
-        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:J"
+        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:L"
     ).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=SS_ID,
@@ -159,16 +161,17 @@ def main():
         ('中', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
         ('低', {'red': 1.0, 'green': 0.88, 'blue': 0.88}),
     ]
+    # 列インデックス: A=0 取引先 / B=1 種別 / G=6 摘要 / H=7 税抜累計 / I=8 平均税抜
+    #                 J=9 信頼度 / K=10 出現回数 / L=11 請求書OK
+    NUM_COLS = 12
     requests = [
-        # 1行目固定 (フリーズ)
         {'updateSheetProperties': {
             'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
             'fields': 'gridProperties.frozenRowCount',
         }},
-        # ヘッダ行 (Row 1) を太字 + 紺色背景 + 白文字
         {'repeatCell': {
             'range': {'sheetId': gid, 'startRowIndex': 0, 'endRowIndex': 1,
-                      'startColumnIndex': 0, 'endColumnIndex': 10},
+                      'startColumnIndex': 0, 'endColumnIndex': NUM_COLS},
             'cell': {'userEnteredFormat': {
                 'backgroundColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
                 'textFormat': {
@@ -180,16 +183,22 @@ def main():
             }},
             'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
         }},
-        # J列 (ロック) にチェックボックス
+        # H列 (税抜額累計) と I列 (平均税抜額) を金額フォーマット
+        {'repeatCell': {
+            'range': {'sheetId': gid, 'startRowIndex': 1,
+                      'startColumnIndex': 7, 'endColumnIndex': 9},
+            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+            'fields': 'userEnteredFormat.numberFormat',
+        }},
+        # L列 (請求書OK) にチェックボックス
         {'setDataValidation': {
             'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 9, 'endColumnIndex': 10},
+                      'startColumnIndex': 11, 'endColumnIndex': 12},
             'rule': {'condition': {'type': 'BOOLEAN'}, 'showCustomUi': True},
         }},
-        # 列幅自動調整
         {'autoResizeDimensions': {
             'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',
-                           'startIndex': 0, 'endIndex': 10},
+                           'startIndex': 0, 'endIndex': NUM_COLS},
         }},
     ]
     # 種別列 (B列, index=1) 条件付き書式
@@ -208,13 +217,13 @@ def main():
                 'index': i,
             }
         })
-    # 信頼度列 (H列, index=7) 条件付き書式
+    # 信頼度列 (J列, index=9) 条件付き書式 (列移動した)
     for j, (val, color) in enumerate(conf_colors):
         requests.append({
             'addConditionalFormatRule': {
                 'rule': {
                     'ranges': [{'sheetId': gid, 'startRowIndex': 1,
-                                'startColumnIndex': 7, 'endColumnIndex': 8}],
+                                'startColumnIndex': 9, 'endColumnIndex': 10}],
                     'booleanRule': {
                         'condition': {'type': 'TEXT_EQ',
                                       'values': [{'userEnteredValue': val}]},
@@ -227,12 +236,12 @@ def main():
                 'index': len(type_colors) + j,
             }
         })
-    # 交互行ベースカラー (奇数行を淡くする) — banding
+    # 交互行 banding
     requests.append({
         'addBanding': {
             'bandedRange': {
                 'range': {'sheetId': gid, 'startRowIndex': 0,
-                          'startColumnIndex': 0, 'endColumnIndex': 10},
+                          'startColumnIndex': 0, 'endColumnIndex': NUM_COLS},
                 'rowProperties': {
                     'headerColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
                     'firstBandColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},

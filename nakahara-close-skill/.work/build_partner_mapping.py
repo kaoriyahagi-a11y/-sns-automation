@@ -156,9 +156,32 @@ def _is_transfer_pattern(debit_account, credit_account):
     )
 
 
+def _tax_rate_from_zubun(zubun):
+    """税区分文字列から税率 (decimal) を返す。例: '課税仕入 10%' → 0.10 / '対象外' → 0.0"""
+    if not zubun:
+        return 0.0
+    s = str(zubun)
+    if '10%' in s:
+        return 0.10
+    if '8%' in s or '(軽)' in s:
+        return 0.08
+    if '0%' in s:
+        return 0.0
+    return 0.0  # 対象外/非課税系
+
+
+def _amount_excl_tax(amount, tax_zubun):
+    """税込金額 → 税抜金額。対象外/非課税は変換しない (元の金額を返す)"""
+    rate = _tax_rate_from_zubun(tax_zubun)
+    if rate <= 0:
+        return int(amount or 0)
+    return int(round(int(amount or 0) / (1 + rate)))
+
+
 def extract_partner_patterns(transaction_groups):
-    """取引先ごとに最頻パターンを抽出して辞書を返す"""
+    """取引先ごとに最頻パターン + 税抜額累計を抽出して辞書を返す"""
     partner_patterns = defaultdict(Counter)
+    partner_amount_excl = defaultdict(int)  # 累計税抜額
     for tx_no, rows in transaction_groups.items():
         partner = _get_partner(rows)
         if not partner:
@@ -167,8 +190,29 @@ def extract_partner_patterns(transaction_groups):
         if not pattern[0] or not pattern[2]:
             continue
         if _is_transfer_pattern(pattern[0], pattern[2]):
-            continue  # 振替/回収は学習しない (計上仕訳のみ学ぶ)
+            continue
         partner_patterns[partner][pattern] += 1
+        # 税抜額累計 (借方優先で計算)
+        debit_account, debit_tax, credit_account, credit_tax = pattern
+        for row in rows:
+            d_amt = row.get('借方金額(円)') or row.get('借方金額') or ''
+            c_amt = row.get('貸方金額(円)') or row.get('貸方金額') or ''
+            try:
+                d = int(str(d_amt).replace(',', '')) if d_amt else 0
+            except (ValueError, TypeError):
+                d = 0
+            try:
+                c = int(str(c_amt).replace(',', '')) if c_amt else 0
+            except (ValueError, TypeError):
+                c = 0
+            # P/L 側 (借方=費用系 or 貸方=売上系) で計算
+            if d > 0 and debit_account and 'P/L' not in '':  # debit_account is the 計上 side
+                partner_amount_excl[partner] += _amount_excl_tax(d, debit_tax)
+                break
+            elif c > 0 and credit_account:
+                partner_amount_excl[partner] += _amount_excl_tax(c, credit_tax)
+                break
+
     result = {}
     for partner, counter in partner_patterns.items():
         if not counter:
@@ -176,6 +220,8 @@ def extract_partner_patterns(transaction_groups):
         top_pattern, top_count = counter.most_common(1)[0]
         debit_account, debit_tax, credit_account, credit_tax = top_pattern
         tx_type = _guess_type(debit_account, credit_account)
+        total_excl = partner_amount_excl.get(partner, 0)
+        avg_excl = int(total_excl / top_count) if top_count > 0 else 0
         result[partner] = {
             'type': tx_type,
             'debit_account': debit_account,
@@ -185,6 +231,8 @@ def extract_partner_patterns(transaction_groups):
             'summary_template': '{partner} {month}月分',
             'confidence': assign_confidence(top_count),
             'occurrences': top_count,
+            'amount_excl_total': total_excl,
+            'amount_excl_avg': avg_excl,
         }
     return result
 

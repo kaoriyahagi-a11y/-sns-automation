@@ -219,15 +219,15 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
     else:
         mapping = {}
 
-    # マスタシートのロック行を上書き
+    # マスタシートの「請求書OK」行を上書き (12列構成、L列=index 11)
     try:
         resp = sheets.spreadsheets().values().get(
-            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:J"
+            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:L"
         ).execute()
         for row in resp.get('values', []):
-            row = (list(row) + [''] * 10)[:10]
-            if (row[9] or '').strip() in {'✓', '✔', 'TRUE', 'true', '1'}:
-                partner = row[0].strip()
+            row = (list(row) + [''] * 12)[:12]
+            if (row[11] or '').strip() in {'✓', '✔', 'TRUE', 'true', '1'}:
+                partner = (row[0] or '').strip()
                 if not partner:
                     continue
                 mapping[partner] = {
@@ -237,7 +237,7 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
                     'credit_account': row[4] or '',
                     'credit_tax': row[5] or '',
                     'summary_template': row[6] or '{partner} {month}月分',
-                    'confidence': '高',  # ロック行は常に高扱い
+                    'confidence': '高',  # 請求書OK 行は常に高扱い
                     'occurrences': 999,
                 }
     except Exception as e:
