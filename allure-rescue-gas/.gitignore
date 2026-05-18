@@ -1,0 +1,8 @@
+# Service account key (do NOT commit)
+*.json
+!appsscript.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
