@@ -1,5 +1,7 @@
 # Allure経理救援 Phase 1 (Foundation + C1) Implementation Plan
 
+> ⚠️ **SUPERSEDED**: 本プランは 2026-05-19 に廃案。Python + Anthropic API ベースのアーキが `feedback_no_claude_dependency.md` と整合しないため。後継spec: [`2026-05-19-allure-rescue-gas-rewrite-design.md`](../specs/2026-05-19-allure-rescue-gas-rewrite-design.md)。新Planは別ファイルで作成予定。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 領収書PDF→「美容室：入出金経費管理」シート自動行追加パイプラインを動かす（C1のみ、TKC=FALSE運用、過去275行に対するバックテストで95%精度を達成する）。

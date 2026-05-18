@@ -1,5 +1,7 @@
 # Allure経理 救援設計書（Phase 1: 仕訳自動化）
 
+> ⚠️ **SUPERSEDED**: 本設計書は 2026-05-19 に廃案。`feedback_no_claude_dependency.md`（経理系はGAS+Sheetsで完結、Claude/AI運用依存禁止）と整合しないため。後継: [`2026-05-19-allure-rescue-gas-rewrite-design.md`](./2026-05-19-allure-rescue-gas-rewrite-design.md)
+
 作成日: 2026-05-01
 作成: Claude（矢萩さん引継ぎセッション）
 監修: 株式会社ORI（矢萩香織）／福光税理士事務所（指示協議要）
