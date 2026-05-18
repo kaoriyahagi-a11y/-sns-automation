@@ -133,6 +133,21 @@ def _infer_type_from_section(section):
     return '固定費'
 
 
+def _infer_subtotals_from_tax(amount, debit_tax, credit_tax):
+    """税区分から 8%/10% 別の税込金額を推定 (混在 OCR 取れなかった場合のフォールバック)
+
+    - debit_tax / credit_tax に '8%' or '軽' を含む → 全額 8%
+    - debit_tax / credit_tax に '10%' を含む → 全額 10%
+    - どちらでもなければ → どちらも 0 (対象外/非課税)
+    """
+    tax_str = f'{debit_tax or ""} {credit_tax or ""}'
+    if '8%' in tax_str or '(軽)' in tax_str:
+        return amount, 0
+    if '10%' in tax_str:
+        return 0, amount
+    return 0, 0
+
+
 def build_proposal_row(v34_row, mapping, month, normalized_index=None):
     """試作v34 1行 → 仕訳案 1行 (dict)
 
@@ -166,6 +181,11 @@ def build_proposal_row(v34_row, mapping, month, normalized_index=None):
             judgment = 'OK'
         else:
             judgment = '要確認'
+
+    # 税率分解: 試作v34 から sub8/sub10 が取れていればそれを使う、
+    # 取れていなければ税区分から全額をどちらかに振る
+    if sub8 == 0 and sub10 == 0 and amount > 0:
+        sub8, sub10 = _infer_subtotals_from_tax(amount, m['debit_tax'], m['credit_tax'])
 
     summary_template = m.get('summary_template') or '{partner} {month}月分'
     summary = summary_template.format(partner=partner, month=month)
@@ -290,7 +310,8 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
     out = []
     current_section = '不明'
     current_headers = None
-    header_keywords = ('取引先', 'クライアント', '仕入先')
+    header_partner_keywords = ('取引先', 'クライアント', '仕入先', 'PDF名')
+    header_structural_keywords = ('リンク', 'PDF', '金額', '締日', '振込日', '入金予定日', 'OCR')
 
     for r in rows:
         if not r or not any(str(c).strip() for c in r):
@@ -299,25 +320,25 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
         first_cell = str(r[0]).strip() if r else ''
         joined = ' '.join(str(c) for c in r)
 
-        # セクション見出し行: 「【...】」開始の単一セル or 「【売上 15〆...】」型
+        # セクション見出し行
         if first_cell.startswith('【') and '】' in first_cell:
             current_section = first_cell
-            current_headers = None  # 次のヘッダで再設定
+            current_headers = None
             continue
 
-        # コメント行 (# で始まる) スキップ
-        if first_cell.startswith('#'):
-            continue
-
-        # サマリ行スキップ (【サマリ】 の後の小集計)
-        if 'サマリ' in joined and len(non_empty) <= 3:
-            continue
-
-        # 列ヘッダ行検出: 取引先/クライアント/仕入先 + 構造的指標
-        if any(kw in joined for kw in header_keywords):
-            if any(ind in joined for ind in ('リンク', 'PDF', '金額', '締日', '振込日', '入金予定日')):
+        # 列ヘッダ行検出 (# 始まりでも構造的キーワード含めば検出する → その他フォルダ対応)
+        if any(kw in joined for kw in header_partner_keywords):
+            if any(ind in joined for ind in header_structural_keywords):
                 current_headers = list(r)
                 continue
+
+        # 単独 # コメント行スキップ
+        if first_cell.startswith('#') and len(non_empty) <= 1:
+            continue
+
+        # サマリ行スキップ
+        if 'サマリ' in joined and len(non_empty) <= 3:
+            continue
 
         if not current_headers:
             continue
@@ -328,17 +349,21 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
             row_dict.get('取引先')
             or row_dict.get('クライアント')
             or row_dict.get('仕入先')
+            or row_dict.get('PDF名')
             or ''
         )
         partner = str(partner).strip()
+        # 「✅」プレフィックス除去 (Drive 同期マーカー)
+        partner = partner.lstrip('✅✓☑ ').strip()
         if not partner or partner in ('-', '−'):
             continue
 
-        # 金額: 候補列を順に試す
+        # 金額: 候補列を順に試す (その他フォルダ用に 'OCR金額' / '請求書金額(税込)' 追加)
         amount = 0
         for ac in (
             '最終金額(税込)', '売上金額(税込)', '仕入金額(税込)',
-            '金額(税込)', '金額', '請求金額', '実額(税込)',
+            '請求書金額(税込)', '請求書金額(税抜)',
+            '金額(税込)', '金額', '請求金額', '実額(税込)', 'OCR金額',
         ):
             v = row_dict.get(ac)
             if v is not None and str(v).strip() not in ('', '-', '−'):
