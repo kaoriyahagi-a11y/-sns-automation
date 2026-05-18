@@ -63,7 +63,7 @@ class TestBuildProposal(unittest.TestCase):
         self.assertEqual(row['貸方勘定科目'], '買掛金')
         self.assertEqual(row['貸方金額'], 80000)
         self.assertEqual(row['摘要'], '有限会社ヤマイシ小林 4月分')
-        self.assertEqual(row['マッピング判定'], 'OK')
+        self.assertEqual(row['_judgment'], 'OK')
         self.assertEqual(row['8%対象(内訳)'], 80000)
         self.assertEqual(row['10%対象(内訳)'], 0)
 
@@ -78,7 +78,7 @@ class TestBuildProposal(unittest.TestCase):
         self.assertEqual(row['取引種別'], '売上')
         self.assertEqual(row['借方勘定科目'], '売掛金')
         self.assertEqual(row['貸方勘定科目'], '売上高【10％】')
-        self.assertEqual(row['マッピング判定'], 'OK')
+        self.assertEqual(row['_judgment'], 'OK')
 
     def test_low_confidence_judgment_yokakunin(self):
         """信頼度=低 → 要確認"""
@@ -88,7 +88,7 @@ class TestBuildProposal(unittest.TestCase):
             'subtotal_8': 0, 'subtotal_10': 50000,
         }
         row = build_proposal_row(v34, SAMPLE_MAPPING, '4')
-        self.assertEqual(row['マッピング判定'], '要確認')
+        self.assertEqual(row['_judgment'], '要確認')
 
     def test_unmapped_purchase_section_uses_default(self):
         """未登録 + 仕入セクション → 仕入高【8％】 デフォルト (鮮魚卸し前提)"""
@@ -98,7 +98,7 @@ class TestBuildProposal(unittest.TestCase):
             'subtotal_8': 50000, 'subtotal_10': 0,
         }
         row = build_proposal_row(v34, {}, '4')
-        self.assertEqual(row['マッピング判定'], '未登録')
+        self.assertEqual(row['_judgment'], '未登録')
         self.assertEqual(row['取引種別'], '仕入')
         self.assertEqual(row['借方勘定科目'], '仕入高【8％】')
         self.assertEqual(row['貸方勘定科目'], '買掛金')

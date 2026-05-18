@@ -28,10 +28,12 @@ SCOPES = [
 PROPOSAL_HEADERS = [
     '確定状態', '取引日', '取引種別', '取引先',
     '借方勘定科目', '借方補助科目', '借方税区分', '借方金額',
+    '管理数字(税抜)', '請求書実額(税抜)', '差異',
     '貸方勘定科目', '貸方補助科目', '貸方税区分', '貸方金額',
     '摘要', 'ソースPDFリンク',
     '8%対象(内訳)', '10%対象(内訳)',
 ]
+# 19列
 # 内部用 (シート非出力): 判定値を保持して行背景色を決める
 _INTERNAL_JUDGMENT_KEY = '_judgment'
 
@@ -194,6 +196,11 @@ def build_proposal_row(v34_row, mapping, month, normalized_index=None):
     summary_template = m.get('summary_template') or '{partner} {month}月分'
     summary = summary_template.format(partner=partner, month=month)
 
+    # 管理数字 / 実額 / 差異
+    mgmt = int(v34_row.get('mgmt_excl_tax') or 0)  # 試作v34 見積金額(税抜)
+    actual = int(v34_row.get('actual_excl_tax') or 0)  # 試作v34 請求書金額(税抜) or OCR
+    diff = actual - mgmt if (mgmt and actual) else ''
+
     return {
         '確定状態': '',
         '取引日': v34_row.get('date') or '',
@@ -203,6 +210,9 @@ def build_proposal_row(v34_row, mapping, month, normalized_index=None):
         '借方補助科目': partner,
         '借方税区分': m['debit_tax'],
         '借方金額': amount,
+        '管理数字(税抜)': mgmt or '',
+        '請求書実額(税抜)': actual or '',
+        '差異': diff,
         '貸方勘定科目': m['credit_account'],
         '貸方補助科目': partner,
         '貸方税区分': m['credit_tax'],
@@ -377,6 +387,10 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
         if amount <= 0:
             continue
 
+        # 管理数字 (見積金額税抜) と 請求書実額(税抜) — 仕入セクションで有意
+        mgmt_excl = _coerce_int(row_dict.get('見積金額(税抜)'))
+        actual_excl = _coerce_int(row_dict.get('請求書金額(税抜)'))
+
         # 税率内訳 (B2で追加される)
         sub8 = 0
         sub10 = 0
@@ -404,6 +418,18 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
             or ''
         )
 
+        # PDFファイル名 (OCR JSON 突合用にリンク文字列から推測)
+        pdf_filename = ''
+        pdf_filename_candidates = [
+            row_dict.get('PDF名'),
+            row_dict.get('請求書PDFリンク'),
+            row_dict.get('SSリンク'),
+        ]
+        for c in pdf_filename_candidates:
+            if c and isinstance(c, str) and '.pdf' in c.lower():
+                pdf_filename = c.strip()
+                break
+
         out.append({
             'partner': partner,
             'date': str(date),
@@ -412,8 +438,63 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
             'subtotal_8': sub8,
             'subtotal_10': sub10,
             'pdf_link': str(pdf_link),
+            'pdf_filename': pdf_filename,
+            'mgmt_excl_tax': mgmt_excl,
+            'actual_excl_tax': actual_excl,
         })
     return out
+
+
+def load_ocr_json(yymm):
+    """purchase_pdf_extracted_*.json があれば読込、PDFファイル名 → サブトータル の dict を返す"""
+    path = os.path.join(WORK_DIR, f'purchase_pdf_extracted_20{yymm}.json')
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    result = {}
+    for f in data.get('files', []):
+        name = f.get('name', '').strip()
+        if not name:
+            continue
+        sub8 = f.get('subtotal_8') or 0
+        sub10 = f.get('subtotal_10') or 0
+        amount = f.get('amount') or 0
+        if sub8 or sub10 or amount:
+            result[name] = {
+                'subtotal_8': sub8,
+                'subtotal_10': sub10,
+                'amount': amount,
+            }
+    return result
+
+
+def apply_ocr_overrides(v34_rows, ocr_index):
+    """OCR JSON から取れたサブトータルを v34_rows の subtotal_8/10 と actual に注入"""
+    if not ocr_index:
+        return
+    for r in v34_rows:
+        fname = r.get('pdf_filename', '')
+        if not fname:
+            continue
+        # 試作v34 のリンクには ✅ や パス・改行が混じる。ファイル名末尾の .pdf 部分で部分一致
+        match = None
+        # 完全一致
+        if fname in ocr_index:
+            match = ocr_index[fname]
+        else:
+            # ファイル名のサフィックス match
+            for key in ocr_index:
+                if key in fname or fname in key:
+                    match = ocr_index[key]
+                    break
+        if match:
+            if match['subtotal_8'] or match['subtotal_10']:
+                r['subtotal_8'] = match['subtotal_8']
+                r['subtotal_10'] = match['subtotal_10']
 
 
 def write_proposal_tab(sheets, ss_id, month_label, rows):
@@ -431,10 +512,10 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
     if gid is not None:
         try:
             resp = sheets.spreadsheets().values().get(
-                spreadsheetId=ss_id, range=f"'{tab_name}'!A2:P"
+                spreadsheetId=ss_id, range=f"'{tab_name}'!A2:S"
             ).execute()
             for r in resp.get('values', []):
-                r = (list(r) + [''] * 16)[:16]
+                r = (list(r) + [''] * 19)[:19]
                 key = (str(r[1]).strip(), str(r[3]).strip(), str(r[7]).strip())
                 existing_map[key] = {'確定状態': r[0]}
         except Exception:
@@ -458,7 +539,7 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
         rows_by_judgment.setdefault(judgment, []).append(i + 1)  # +1 for header row
 
     sheets.spreadsheets().values().clear(
-        spreadsheetId=ss_id, range=f"'{tab_name}'!A:P"
+        spreadsheetId=ss_id, range=f"'{tab_name}'!A:S"
     ).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=ss_id, range=f"'{tab_name}'!A1",
@@ -466,8 +547,11 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
         body={'values': out_rows},
     ).execute()
 
-    # === 視覚整理: ヘッダ書式 + フリーズ + 金額フォーマット + プルダウン + 判定別行背景色 ===
-    NUM_COLS = 16  # 18 → 16 (マッピング判定・レビューメモ削除)
+    # === 視覚整理: ヘッダ + フリーズ + 金額フォーマット + プルダウン + 判定行背景色 + 差異色 ===
+    # 19列: A確定/B取引日/C種別/D取引先/E借方科目/F借方補助/G借方税/H借方額
+    #       I管理/J実額/K差異/L貸方科目/M貸方補助/N貸方税/O貸方額
+    #       P摘要/Q PDFリンク/R 8%/S 10%
+    NUM_COLS = 19
     requests = [
         {'updateSheetProperties': {
             'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
@@ -487,24 +571,30 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
             }},
             'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
         }},
-        # 金額列を数値フォーマット: H(7)借方金額, L(11)貸方金額, O(14)8%, P(15)10%
-        {'repeatCell': {
-            'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 7, 'endColumnIndex': 8},
-            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
-            'fields': 'userEnteredFormat.numberFormat',
-        }},
-        {'repeatCell': {
-            'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 11, 'endColumnIndex': 12},
-            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
-            'fields': 'userEnteredFormat.numberFormat',
-        }},
-        {'repeatCell': {
-            'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 14, 'endColumnIndex': 16},
-            'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
-            'fields': 'userEnteredFormat.numberFormat',
+        # 金額数値フォーマット: H借方額(7), I管理(8), J実額(9), K差異(10), O貸方額(14), R 8%(17), S 10%(18)
+        *[
+            {'repeatCell': {
+                'range': {'sheetId': gid, 'startRowIndex': 1,
+                          'startColumnIndex': col, 'endColumnIndex': col + 1},
+                'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
+                'fields': 'userEnteredFormat.numberFormat',
+            }} for col in [7, 8, 9, 10, 14, 17, 18]
+        ],
+        # K列「差異」: 0 以外なら赤背景
+        {'addConditionalFormatRule': {
+            'rule': {
+                'ranges': [{'sheetId': gid, 'startRowIndex': 1,
+                            'startColumnIndex': 10, 'endColumnIndex': 11}],
+                'booleanRule': {
+                    'condition': {'type': 'NUMBER_NOT_EQ',
+                                  'values': [{'userEnteredValue': '0'}]},
+                    'format': {
+                        'backgroundColor': {'red': 1.0, 'green': 0.80, 'blue': 0.80},
+                        'textFormat': {'bold': True},
+                    },
+                },
+            },
+            'index': 0,
         }},
         # A列 プルダウン (確定/保留/却下)
         {'setDataValidation': {
@@ -605,6 +695,16 @@ def main():
     # 試作v34 から仕訳生成入力を読込
     v34_rows = _read_shisaku_v34(sheets, SS_ID, yymm)
     print(f'[INFO] 試作v34 行: {len(v34_rows)} 件')
+
+    # OCR JSON から税率内訳を上書き (Phase B1 で抽出済の場合)
+    ocr_index = load_ocr_json(yymm)
+    if ocr_index:
+        before = sum(1 for r in v34_rows if r.get('subtotal_8') or r.get('subtotal_10'))
+        apply_ocr_overrides(v34_rows, ocr_index)
+        after = sum(1 for r in v34_rows if r.get('subtotal_8') or r.get('subtotal_10'))
+        print(f'[INFO] OCR JSON 連携: {len(ocr_index)} PDF → 仕訳行 税率内訳更新 ({before} → {after})')
+    else:
+        print(f'[INFO] OCR JSON 未生成 (税率内訳は税区分から推定): /nakahara-close --month {yymm} を Phase 1b まで走らせると精度UP')
 
     # 仕訳案行生成 (正規化 index で fuzzy lookup)
     normalized_index = _build_normalized_index(mapping)
