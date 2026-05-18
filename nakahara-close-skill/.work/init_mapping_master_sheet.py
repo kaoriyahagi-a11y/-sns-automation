@@ -28,11 +28,10 @@ SCOPES = [
 HEADERS = [
     '取引先名', '種別', '借方勘定科目', '借方税区分',
     '貸方勘定科目', '貸方税区分', '摘要テンプレ',
-    '税抜額(累計)', '請求書OK',
+    '税抜額(累計)',
 ]
-# 9列 (A:取引先名 ... I:請求書OK)
-LOCK_COL_INDEX = 8  # 0始まりで I列
-LOCK_TRUE_VALUES = {'✓', '✔', 'TRUE', 'true', '1', 'YES', 'yes'}
+# 8列 (A:取引先名 ... H:税抜額累計) ※確認/確定は仕訳案タブで行うので checkbox 廃止
+LOCK_TRUE_VALUES = set()  # 互換維持のみ
 
 
 def get_creds():
@@ -67,23 +66,23 @@ def get_or_create_tab(sheets, ss_id, tab_name):
 
 
 def load_existing_rows(sheets, ss_id, tab_name):
-    """既存タブから全データ行を読込 (9列)"""
+    """既存タブから全データ行を読込 (8列)"""
     try:
         resp = sheets.spreadsheets().values().get(
-            spreadsheetId=ss_id, range=f"'{tab_name}'!A2:I"
+            spreadsheetId=ss_id, range=f"'{tab_name}'!A2:H"
         ).execute()
     except Exception:
         return []
     values = resp.get('values', [])
     out = []
     for row in values:
-        row = (list(row) + [''] * 9)[:9]
+        row = (list(row) + [''] * 8)[:8]
         out.append(row)
     return out
 
 
 def is_locked(row):
-    return (row[LOCK_COL_INDEX] or '').strip() in LOCK_TRUE_VALUES
+    return False  # checkbox 廃止
 
 
 def main():
@@ -114,11 +113,9 @@ def main():
     locked_partners = {r[0] for r in locked}
     print(f'[INFO] 既存ロック行: {len(locked)} 件')
 
-    # 辞書から (請求書OK行 partner は除く) 新規行を生成
+    # 辞書から行を生成 (累計税抜額 降順)
     new_rows = []
     for partner, p in sorted(patterns.items(), key=lambda x: -x[1].get('amount_excl_total', 0)):
-        if partner in locked_partners:
-            continue
         new_rows.append([
             partner,
             p['type'],
@@ -128,13 +125,12 @@ def main():
             p['credit_tax'],
             p['summary_template'],
             p.get('amount_excl_total', 0),
-            '',
         ])
 
-    out = [HEADERS] + locked + new_rows
+    out = [HEADERS] + new_rows
 
     sheets.spreadsheets().values().clear(
-        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:I"
+        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:H"
     ).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=SS_ID,
@@ -152,9 +148,8 @@ def main():
         ('立替', {'red': 1.0, 'green': 0.98, 'blue': 0.80}),
         ('振替', {'red': 0.93, 'green': 0.88, 'blue': 0.97}),
     ]
-    # 列インデックス: A=0 取引先 / B=1 種別 / C-F=借方/貸方 / G=6 摘要
-    #                 H=7 税抜額累計 / I=8 請求書OK
-    NUM_COLS = 9
+    # 列インデックス: A=0 取引先 / B=1 種別 / C-F=借方/貸方 / G=6 摘要 / H=7 税抜額累計
+    NUM_COLS = 8
     requests = [
         {'updateSheetProperties': {
             'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
@@ -180,12 +175,6 @@ def main():
                       'startColumnIndex': 7, 'endColumnIndex': 8},
             'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
             'fields': 'userEnteredFormat.numberFormat',
-        }},
-        # I列 (請求書OK) にチェックボックス
-        {'setDataValidation': {
-            'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 8, 'endColumnIndex': 9},
-            'rule': {'condition': {'type': 'BOOLEAN'}, 'showCustomUi': True},
         }},
         {'autoResizeDimensions': {
             'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',

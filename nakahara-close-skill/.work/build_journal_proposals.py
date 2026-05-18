@@ -29,9 +29,11 @@ PROPOSAL_HEADERS = [
     '確定状態', '取引日', '取引種別', '取引先',
     '借方勘定科目', '借方補助科目', '借方税区分', '借方金額',
     '貸方勘定科目', '貸方補助科目', '貸方税区分', '貸方金額',
-    '摘要', 'ソースPDFリンク', 'マッピング判定', 'レビューメモ',
+    '摘要', 'ソースPDFリンク',
     '8%対象(内訳)', '10%対象(内訳)',
 ]
+# 内部用 (シート非出力): 判定値を保持して行背景色を決める
+_INTERNAL_JUDGMENT_KEY = '_judgment'
 
 DEFAULT_BY_TYPE = {
     # 中原水産は鮮魚卸しなので 仕入/売上 は基本 8% 軽減税率がデフォルト
@@ -207,10 +209,9 @@ def build_proposal_row(v34_row, mapping, month, normalized_index=None):
         '貸方金額': amount,
         '摘要': summary,
         'ソースPDFリンク': v34_row.get('pdf_link') or '',
-        'マッピング判定': judgment,
-        'レビューメモ': '',
         '8%対象(内訳)': sub8,
         '10%対象(内訳)': sub10,
+        _INTERNAL_JUDGMENT_KEY: judgment,
     }
 
 
@@ -241,17 +242,18 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
     else:
         mapping = {}
 
-    # マスタシートの「請求書OK」行を上書き (9列構成、I列=index 8)
+    # マスタシートは累計参照用 (checkbox 廃止)。手動編集された行があれば上書き優先
     try:
         resp = sheets.spreadsheets().values().get(
-            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:I"
+            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:H"
         ).execute()
         for row in resp.get('values', []):
-            row = (list(row) + [''] * 9)[:9]
-            if (row[8] or '').strip() in {'✓', '✔', 'TRUE', 'true', '1'}:
-                partner = (row[0] or '').strip()
-                if not partner:
-                    continue
+            row = (list(row) + [''] * 8)[:8]
+            partner = (row[0] or '').strip()
+            if not partner:
+                continue
+            # シートで直接編集された科目/税区分があれば JSON より優先
+            if row[2] or row[4]:
                 mapping[partner] = {
                     'type': row[1] or '固定費',
                     'debit_account': row[2] or '',
@@ -259,7 +261,7 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
                     'credit_account': row[4] or '',
                     'credit_tax': row[5] or '',
                     'summary_template': row[6] or '{partner} {month}月分',
-                    'confidence': '高',  # 請求書OK 行は常に高扱い
+                    'confidence': '高',
                     'occurrences': 999,
                 }
     except Exception as e:
@@ -415,10 +417,9 @@ def _read_shisaku_v34(sheets, ss_id, yymm):
 
 
 def write_proposal_tab(sheets, ss_id, month_label, rows):
-    """仕訳案タブを上書き、ただし既存 A列(確定状態) と P列(レビューメモ) は保持"""
+    """仕訳案タブを上書き、既存 A列(確定状態) は保持。行背景色で判定を表現。"""
     tab_name = f'仕訳案_{month_label}'
 
-    # 既存タブの A 列 + P 列を行キー (取引日|取引先|借方金額) でマップ
     existing_map = {}
     gid = None
     ss = sheets.spreadsheets().get(spreadsheetId=ss_id).execute()
@@ -430,15 +431,12 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
     if gid is not None:
         try:
             resp = sheets.spreadsheets().values().get(
-                spreadsheetId=ss_id, range=f"'{tab_name}'!A2:R"
+                spreadsheetId=ss_id, range=f"'{tab_name}'!A2:P"
             ).execute()
             for r in resp.get('values', []):
-                r = (list(r) + [''] * 18)[:18]
+                r = (list(r) + [''] * 16)[:16]
                 key = (str(r[1]).strip(), str(r[3]).strip(), str(r[7]).strip())
-                existing_map[key] = {
-                    '確定状態': r[0],
-                    'レビューメモ': r[15],
-                }
+                existing_map[key] = {'確定状態': r[0]}
         except Exception:
             pass
     else:
@@ -447,19 +445,20 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
         }).execute()
         gid = resp['replies'][0]['addSheet']['properties']['sheetId']
 
-    # 行データ構築 (既存A/P列を再注入)
+    # 行データ構築 + 判定別の行 index 集計
     out_rows = [PROPOSAL_HEADERS]
-    for row in rows:
+    rows_by_judgment = {'OK': [], '要確認': [], '未登録': []}
+    for i, row in enumerate(rows):
         key = (str(row['取引日']).strip(), str(row['取引先']).strip(), str(row['借方金額']).strip())
         existing = existing_map.get(key)
         if existing:
             row['確定状態'] = existing['確定状態']
-            row['レビューメモ'] = existing['レビューメモ']
-        out_rows.append([row[h] for h in PROPOSAL_HEADERS])
+        out_rows.append([row.get(h, '') for h in PROPOSAL_HEADERS])
+        judgment = row.get(_INTERNAL_JUDGMENT_KEY, '未登録')
+        rows_by_judgment.setdefault(judgment, []).append(i + 1)  # +1 for header row
 
-    # clear + write
     sheets.spreadsheets().values().clear(
-        spreadsheetId=ss_id, range=f"'{tab_name}'!A:R"
+        spreadsheetId=ss_id, range=f"'{tab_name}'!A:P"
     ).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=ss_id, range=f"'{tab_name}'!A1",
@@ -467,17 +466,16 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
         body={'values': out_rows},
     ).execute()
 
-    # === 視覚整理 + プルダウン + 条件付き書式 ===
+    # === 視覚整理: ヘッダ書式 + フリーズ + 金額フォーマット + プルダウン + 判定別行背景色 ===
+    NUM_COLS = 16  # 18 → 16 (マッピング判定・レビューメモ削除)
     requests = [
-        # 1行目フリーズ
         {'updateSheetProperties': {
             'properties': {'sheetId': gid, 'gridProperties': {'frozenRowCount': 1}},
             'fields': 'gridProperties.frozenRowCount',
         }},
-        # ヘッダ行を太字+紺色背景+白文字
         {'repeatCell': {
             'range': {'sheetId': gid, 'startRowIndex': 0, 'endRowIndex': 1,
-                      'startColumnIndex': 0, 'endColumnIndex': 18},
+                      'startColumnIndex': 0, 'endColumnIndex': NUM_COLS},
             'cell': {'userEnteredFormat': {
                 'backgroundColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
                 'textFormat': {
@@ -489,7 +487,7 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
             }},
             'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)',
         }},
-        # H列 (借方金額) と L列 (貸方金額) を金額フォーマット
+        # 金額列を数値フォーマット: H(7)借方金額, L(11)貸方金額, O(14)8%, P(15)10%
         {'repeatCell': {
             'range': {'sheetId': gid, 'startRowIndex': 1,
                       'startColumnIndex': 7, 'endColumnIndex': 8},
@@ -502,10 +500,9 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
             'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
             'fields': 'userEnteredFormat.numberFormat',
         }},
-        # Q,R列 (税率内訳) も金額フォーマット
         {'repeatCell': {
             'range': {'sheetId': gid, 'startRowIndex': 1,
-                      'startColumnIndex': 16, 'endColumnIndex': 18},
+                      'startColumnIndex': 14, 'endColumnIndex': 16},
             'cell': {'userEnteredFormat': {'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}}},
             'fields': 'userEnteredFormat.numberFormat',
         }},
@@ -525,17 +522,37 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
                 'showCustomUi': True,
             }
         }},
-        # 列幅自動調整 (全体)
         {'autoResizeDimensions': {
             'dimensions': {'sheetId': gid, 'dimension': 'COLUMNS',
-                           'startIndex': 0, 'endIndex': 18},
+                           'startIndex': 0, 'endIndex': NUM_COLS},
         }},
     ]
-    # A列 (確定状態) 条件付き書式
+    # 判定別の行背景色 (OK=緑/要確認=黄/未登録=赤)
+    judgment_colors = {
+        'OK': {'red': 0.92, 'green': 0.97, 'blue': 0.92},
+        '要確認': {'red': 1.0, 'green': 0.97, 'blue': 0.83},
+        '未登録': {'red': 1.0, 'green': 0.92, 'blue': 0.92},
+    }
+    for judgment, row_indices in rows_by_judgment.items():
+        color = judgment_colors.get(judgment)
+        if not color or not row_indices:
+            continue
+        # 連続範囲を圧縮して RepeatCell 1回で塗る (簡易: 行ごとに repeatCell)
+        for row_idx in row_indices:
+            requests.append({
+                'repeatCell': {
+                    'range': {'sheetId': gid,
+                              'startRowIndex': row_idx, 'endRowIndex': row_idx + 1,
+                              'startColumnIndex': 0, 'endColumnIndex': NUM_COLS},
+                    'cell': {'userEnteredFormat': {'backgroundColor': color}},
+                    'fields': 'userEnteredFormat.backgroundColor',
+                }
+            })
+    # A列 (確定状態) 条件付き書式 — 確定時に太字で目立たせる
     state_colors = [
-        ('確定', {'red': 0.78, 'green': 0.93, 'blue': 0.78}),
-        ('保留', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
-        ('却下', {'red': 0.85, 'green': 0.85, 'blue': 0.85}),
+        ('確定', {'red': 0.55, 'green': 0.80, 'blue': 0.55}),
+        ('保留', {'red': 1.0, 'green': 0.80, 'blue': 0.40}),
+        ('却下', {'red': 0.70, 'green': 0.70, 'blue': 0.70}),
     ]
     for i, (val, color) in enumerate(state_colors):
         requests.append({
@@ -553,66 +570,6 @@ def write_proposal_tab(sheets, ss_id, month_label, rows):
                 'index': i,
             }
         })
-    # C列 (取引種別) 条件付き書式
-    type_colors = [
-        ('仕入', {'red': 0.85, 'green': 0.93, 'blue': 1.0}),
-        ('売上', {'red': 1.0, 'green': 0.92, 'blue': 0.83}),
-        ('固定費', {'red': 0.92, 'green': 0.92, 'blue': 0.92}),
-        ('立替', {'red': 1.0, 'green': 0.98, 'blue': 0.80}),
-    ]
-    base = len(state_colors)
-    for i, (val, color) in enumerate(type_colors):
-        requests.append({
-            'addConditionalFormatRule': {
-                'rule': {
-                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
-                                'startColumnIndex': 2, 'endColumnIndex': 3}],
-                    'booleanRule': {
-                        'condition': {'type': 'TEXT_EQ',
-                                      'values': [{'userEnteredValue': val}]},
-                        'format': {'backgroundColor': color},
-                    },
-                },
-                'index': base + i,
-            }
-        })
-    # O列 (マッピング判定) 条件付き書式
-    judg_colors = [
-        ('OK', {'red': 0.85, 'green': 0.95, 'blue': 0.85}),
-        ('要確認', {'red': 1.0, 'green': 0.95, 'blue': 0.70}),
-        ('未登録', {'red': 1.0, 'green': 0.85, 'blue': 0.85}),
-    ]
-    base += len(type_colors)
-    for i, (val, color) in enumerate(judg_colors):
-        requests.append({
-            'addConditionalFormatRule': {
-                'rule': {
-                    'ranges': [{'sheetId': gid, 'startRowIndex': 1,
-                                'startColumnIndex': 14, 'endColumnIndex': 15}],
-                    'booleanRule': {
-                        'condition': {'type': 'TEXT_EQ',
-                                      'values': [{'userEnteredValue': val}]},
-                        'format': {'backgroundColor': color,
-                                   'textFormat': {'bold': True}},
-                    },
-                },
-                'index': base + i,
-            }
-        })
-    # 交互行 banding
-    requests.append({
-        'addBanding': {
-            'bandedRange': {
-                'range': {'sheetId': gid, 'startRowIndex': 0,
-                          'startColumnIndex': 0, 'endColumnIndex': 18},
-                'rowProperties': {
-                    'headerColor': {'red': 0.20, 'green': 0.35, 'blue': 0.55},
-                    'firstBandColor': {'red': 1.0, 'green': 1.0, 'blue': 1.0},
-                    'secondBandColor': {'red': 0.97, 'green': 0.97, 'blue': 0.97},
-                },
-            }
-        }
-    })
     try:
         sheets.spreadsheets().batchUpdate(spreadsheetId=ss_id, body={
             'requests': requests
@@ -658,9 +615,9 @@ def main():
 
     # 判定サマリ
     from collections import Counter
-    judgments = Counter(r['マッピング判定'] for r in proposal_rows)
+    judgments = Counter(r.get(_INTERNAL_JUDGMENT_KEY, '未登録') for r in proposal_rows)
     print(f'[OK] {tab_name} に {count} 行 (gid={gid})')
-    print(f'     判定: OK={judgments.get("OK", 0)} / 要確認={judgments.get("要確認", 0)} / 未登録={judgments.get("未登録", 0)}')
+    print(f'     行背景色: 緑(OK)={judgments.get("OK", 0)} / 黄(要確認)={judgments.get("要確認", 0)} / 赤(未登録)={judgments.get("未登録", 0)}')
     print(f'     URL: https://docs.google.com/spreadsheets/d/{SS_ID}/edit#gid={gid}')
 
 
