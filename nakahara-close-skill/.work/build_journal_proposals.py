@@ -219,14 +219,14 @@ def load_mapping_with_master_override(sheets, ss_id, json_path):
     else:
         mapping = {}
 
-    # マスタシートの「請求書OK」行を上書き (12列構成、L列=index 11)
+    # マスタシートの「請求書OK」行を上書き (9列構成、I列=index 8)
     try:
         resp = sheets.spreadsheets().values().get(
-            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:L"
+            spreadsheetId=ss_id, range=f"'{MAPPING_MASTER_TAB}'!A2:I"
         ).execute()
         for row in resp.get('values', []):
-            row = (list(row) + [''] * 12)[:12]
-            if (row[11] or '').strip() in {'✓', '✔', 'TRUE', 'true', '1'}:
+            row = (list(row) + [''] * 9)[:9]
+            if (row[8] or '').strip() in {'✓', '✔', 'TRUE', 'true', '1'}:
                 partner = (row[0] or '').strip()
                 if not partner:
                     continue
