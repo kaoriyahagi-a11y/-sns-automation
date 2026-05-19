@@ -159,3 +159,37 @@ function testClassifyAllocation_NotRequired() {
   const r = classifyAllocation('セブンイレブン', 500, m);
   assertFalse(r.required);
 }
+
+// === Ledger tests ===
+
+function testIsDuplicate_Match() {
+  const existing = [
+    ['NO', '収日', '支払先', '勘定科目', '金額', '使用者', 'リンク', 'TKC', '備考'],
+    [1, '2026-05-10', 'マツモトキヨシ', '消耗品費', 1200, '戸田', 'url', false, '']
+  ];
+  assertTrue(isDuplicateInRows('2026-05-10', 1200, 'マツモトキヨシ薬局', existing));
+}
+
+function testIsDuplicate_NoMatch_DifferentDate() {
+  const existing = [
+    ['NO', '収日', '支払先', '勘定科目', '金額', '使用者', 'リンク', 'TKC', '備考'],
+    [1, '2026-05-10', 'マツモトキヨシ', '消耗品費', 1200, '戸田', 'url', false, '']
+  ];
+  assertFalse(isDuplicateInRows('2026-05-11', 1200, 'マツモトキヨシ', existing));
+}
+
+function testIsDuplicate_NoMatch_DifferentAmount() {
+  const existing = [
+    ['NO', '収日', '支払先', '勘定科目', '金額', '使用者', 'リンク', 'TKC', '備考'],
+    [1, '2026-05-10', 'マツモトキヨシ', '消耗品費', 1200, '戸田', 'url', false, '']
+  ];
+  assertFalse(isDuplicateInRows('2026-05-10', 1500, 'マツモトキヨシ', existing));
+}
+
+function testIsDuplicate_NoMatch_DifferentPayee() {
+  const existing = [
+    ['NO', '収日', '支払先', '勘定科目', '金額', '使用者', 'リンク', 'TKC', '備考'],
+    [1, '2026-05-10', 'マツモトキヨシ', '消耗品費', 1200, '戸田', 'url', false, '']
+  ];
+  assertFalse(isDuplicateInRows('2026-05-10', 1200, '別の店', existing));
+}
