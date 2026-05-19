@@ -18,6 +18,8 @@ WORK_DIR = os.path.join(PROJECT_ROOT, '.work').replace('\\', '/')
 AUTH_DIR = os.environ.get('NAKAHARA_AUTH_DIR') or os.path.join(PROJECT_ROOT, '.auth', 'lb')
 
 SS_ID = '1X_oPij_Fq_fJO9Dtfth-sn2z1BKyIOoSl1M6PD3mUXs'
+# Drive: 経理データ_中原水産/MF取込CSV (kaori.yahagi@ori-ka.com)
+DEFAULT_DRIVE_FOLDER = '1LfWKspXP50JC9zeU1ZcJhvfhzu4UiBSn'
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive',
@@ -267,7 +269,8 @@ def write_mf_import_tab(sheets, ss_id, month_label, rows, drive_url):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--month', required=True, help='YYMM (例: 2604)')
-    parser.add_argument('--drive-folder', help='Drive MF取込CSV フォルダID')
+    parser.add_argument('--drive-folder', default=DEFAULT_DRIVE_FOLDER,
+                        help=f'Drive MF取込CSV フォルダID (default={DEFAULT_DRIVE_FOLDER})')
     args = parser.parse_args()
     yymm = args.month
     month = int(yymm[2:])
