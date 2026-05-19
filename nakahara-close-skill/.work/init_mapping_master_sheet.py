@@ -129,9 +129,20 @@ def main():
 
     out = [HEADERS] + new_rows
 
+    # 過去スキーマ (9/12列) の残骸も含めて広めに clear
     sheets.spreadsheets().values().clear(
-        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:H"
+        spreadsheetId=SS_ID, range=f"'{TAB_NAME}'!A:Z"
     ).execute()
+    # 同様に Data Validation (チェックボックス等) も全範囲リセット
+    sheets.spreadsheets().batchUpdate(spreadsheetId=SS_ID, body={
+        'requests': [{
+            'setDataValidation': {
+                'range': {'sheetId': gid, 'startRowIndex': 0,
+                          'startColumnIndex': 0, 'endColumnIndex': 26},
+                # rule なし → 既存の DataValidation 解除
+            }
+        }]
+    }).execute()
     sheets.spreadsheets().values().update(
         spreadsheetId=SS_ID,
         range=f"'{TAB_NAME}'!A1",
