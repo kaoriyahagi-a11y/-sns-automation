@@ -1,0 +1,15 @@
+name = "sns-auto-poster"
+main = "src/index.js"
+compatibility_date = "2026-04-20"
+
+# Cron triggers (UTC)
+# 23:00 UTC = 08:00 JST (朝)
+# 12:00 UTC = 21:00 JST (夜)
+[triggers]
+crons = ["0 23 * * *", "0 12 * * *"]
+
+# KV Namespace for post deduplication
+# `wrangler kv namespace create POSTED_KV` で作成したIDをここに貼る
+[[kv_namespaces]]
+binding = "KV"
+id = "f7bd560165aa40bb9513dec06bb91e6e"
